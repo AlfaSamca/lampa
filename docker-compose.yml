@@ -1,0 +1,11 @@
+version: "3.8"
+
+services:
+  bot:
+    build: .
+    container_name: lampa_bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - ./lampa.sqlite:/app/lampa.sqlite
