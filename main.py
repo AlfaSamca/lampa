@@ -26,7 +26,7 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))  # ID должен быть числом
 DB_NAME = os.getenv("DB_NAME", "lampa.sqlite")
 
 # Остальные настройки можно оставить как есть, так как они не секретные
-MENU_URL = "https://drive.google.com/file/d/1ck63TZ6amTaqmQ0bOIi1D2m4ZTsw29B2/view?usp=drivesdk"
+MENU_URL = "https://menusa.app/11f147d08be313bb8dcc55efc6664fa5"
 TOTAL_TABLES = 23
 
 ZONES = {
