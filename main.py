@@ -633,28 +633,37 @@ async def feedback_process(message: Message, state: FSMContext):
     await state.clear()
 
 async def set_main_menu(bot: Bot):
-    # 1. Меню для всех пользователей
+    # 1. Общее меню для всех
     user_commands = [
-        BotCommand(command="/start", description="Запустить бота / Главное меню"),
-        BotCommand(command="/help", description="Как пользоваться ботом"), # Добавили сюда
+        BotCommand(command="/start", description="Главное меню"),
+        BotCommand(command="/help", description="Помощь"),
     ]
     await bot.set_my_commands(user_commands)
 
-    # 2. Меню для администратора
+    # 2. Меню для ТЕКУЩЕГО администратора
     admin_commands = [
-        BotCommand(command="/start", description="Запустить бота / Главное меню"),
-        BotCommand(command="/help", description="Инструкция для гостя"),
+        BotCommand(command="/start", description="Главное меню"),
         BotCommand(command="/today", description="Брони на сегодня"),
-        BotCommand(command="/stats", description="Базовая статистика"),
+        BotCommand(command="/stats", description="Статистика"),
     ]
 
     try:
+        # Устанавливаем меню текущему админу
         await bot.set_my_commands(
             commands=admin_commands,
             scope=BotCommandScopeChat(chat_id=ADMIN_ID)
         )
+        print(f"=== Меню установлено для админа {ADMIN_ID} ===")
     except Exception as e:
-        print(f"Не удалось установить меню для админа: {e}")
+        print(f"Ошибка установки меню: {e}")
+
+# Функция для принудительной очистки (вызвать один раз, если нужно выгнать старого админа)
+async def clear_old_admin_menu(bot: Bot, old_id: int):
+    try:
+        await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=old_id))
+        print(f"=== Меню старого админа {old_id} удалено ===")
+    except Exception as e:
+        print(f"Не удалось удалить меню: {e}")
 
 
 
