@@ -788,18 +788,18 @@ async def main():
         print("=== Подготовка к запуску ===")
         await db_manager.connect()
         # --- БЛОК ОДНОРАЗОВОЙ ОЧИСТКИ ---
-    OLD_ADMIN_IDS = [736559077]  # Список всех старых ID, у кого висит панель
-    for old_id in OLD_ADMIN_IDS:
-        try:
-            # Удаляем команды конкретно для этого чата
-            await bot.delete_my_commands(scope=types.BotCommandScopeChat(chat_id=old_id))
-            print(f"✅ Меню для {old_id} успешно удалено")
-        except Exception as e:
-            print(f"❌ Не удалось удалить меню для {old_id}: {e}")
+        OLD_ADMIN_IDS = [736559077]  # Список всех старых ID, у кого висит панель
+        for old_id in OLD_ADMIN_IDS:
+            try:
+                # Удаляем команды конкретно для этого чата
+                await bot.delete_my_commands(scope=types.BotCommandScopeChat(chat_id=old_id))
+                print(f"✅ Меню для {old_id} успешно удалено")
+            except Exception as e:
+                print(f"❌ Не удалось удалить меню для {old_id}: {e}")
     
-    # Удаляем ВООБЩЕ ВСЕ глобальные команды бота (на всякий случай)
-    await bot.delete_my_commands(scope=types.BotCommandScopeAllPrivateChats())
-    # --- КОНЕЦ БЛОКА ---
+        # Удаляем ВООБЩЕ ВСЕ глобальные команды бота (на всякий случай)
+        await bot.delete_my_commands(scope=types.BotCommandScopeAllPrivateChats())
+        # --- КОНЕЦ БЛОКА ---
         await init_db()
         await set_main_menu(bot)
 
