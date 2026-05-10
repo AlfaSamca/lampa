@@ -22,7 +22,7 @@ load_dotenv()
 # Теперь данные берутся из окружения.
 # Если переменная не найдена, вернется None или дефолтное значение.
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))  # ID должен быть числом
+ADMIN_ID = 8607101615  # ID должен быть числомint(os.getenv("ADMIN_ID"))
 DB_NAME = os.getenv("DB_NAME", "lampa.sqlite")
 
 # Остальные настройки можно оставить как есть, так как они не секретные
