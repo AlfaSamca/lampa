@@ -214,14 +214,20 @@ def main_menu():
 async def get_time_kb(date: str):
     kb = InlineKeyboardBuilder()
     times = ["12:00", "12:30", "13:00", "13:30", "14:00", "14:30",
-"15:00", "15:30", "16:00", "16:30", "17:00", "17:30",
-"18:00", "18:30", "19:00", "19:30", "20:00", "20:30",
-"21:00", "21:30", "22:00", "22:30", "23:00"]
+             "15:00", "15:30", "16:00", "16:30", "17:00", "17:30",
+             "18:00", "18:30", "19:00", "19:30", "20:00", "20:30",
+             "21:00", "21:30", "22:00", "22:30", "23:00"]
+
+    # Ограничение для 30 мая: оставляем только слоты до 14:00 включительно
+    if date.startswith("30.05."):
+        times = [t for t in times if t <= "14:00"]
+
     for t in times:
         status, _ = await get_time_status(date, t)
         icon = "🔴" if status == "full" else ("🟢" if status == "all" else "🟡")
         callback = "ignore" if status == "full" else f"time:{t}"
         kb.button(text=f"{icon} {t}", callback_data=callback)
+    
     kb.adjust(3)
     return kb.as_markup()
 
@@ -366,7 +372,13 @@ async def set_date(callback: CallbackQuery, state: FSMContext):
 async def set_time(callback: CallbackQuery, state: FSMContext):
     time = callback.data.split(":", 1)[1]
     data = await state.get_data()
-    status, zones = await get_time_status(data['date'], time)
+    date_str = data.get('date')
+
+    # Защита на стороне сервера для 30 мая
+    if date_str and date_str.startswith("30.05.") and time > "14:00":
+        return await callback.answer("Извините, 30 мая бронирование доступно только до 14:00 🕑", show_alert=True)
+
+    status, zones = await get_time_status(date_str, time)
 
     if status == "full":
         return await callback.answer("Извините, на это время мест нет", show_alert=True)
