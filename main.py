@@ -1,10 +1,10 @@
 import asyncio
 import calendar
 from datetime import datetime, timedelta
-
+from aiogram.types import FSInputFile
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, \
-    ReplyKeyboardRemove, BotCommand, BotCommandScopeChat # Добавь BotCommandScopeChat и BotCommand
+    ReplyKeyboardRemove, BotCommand, BotCommandScopeChat  # Добавь BotCommandScopeChat и BotCommand
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
@@ -34,7 +34,46 @@ ZONES = {
     "hall_2": {"name": "✨ Второй этаж (уютная зона)", "capacity": 24},
     "terrace": {"name": "🌿 Летняя терраса", "capacity": 16},
 }
+FLOORS = {
+    "floor_1": {
+        "name": "🛋 Первый этаж (основной зал)",
+        "photo": "AgACAgIAAxkBAAIDlGoaxLXluMe4aiG53mNkZbhJHNz5AAKIFmsbl43YSIW-WhNDai5xAQADAgADeQADOwQ"
+    },
+    "floor_2": {
+        "name": "✨ Второй этаж (уютная зона)",
+        "photo": "AgACAgIAAxkBAAIDlmoaxMK_FOSC1dpv7sTeuouYJgfAAAKCFmsbl43YSFcRX-PsM9IcAQADAgADeQADOwQ"
+    }
+}
+EVENT_TEXT = """
+<b>ВЕЧЕРИНКА-ОТКРЫТИЕ ЛАМПЫ💫</b>
 
+🗓️ в эту субботу 30 мая
+🕑 с 18:00 и до утра
+📍 Октябрьская 23
+
+Крутая программа в концепции «современное ЭТНО» с активностями, розыгрышами, фуршетом из наших вкуснейших блюд, тематическими фотозонами и многим другим🔥
+
+Мы пригласили ведущего, фотографа, крутых белорусских диджеев, чтобы вы незабываемо провели время❤️
+"""
+
+EVENT_VIDEO_ID = "BAACAgIAAxkBAAIDmmoaxTm7lTn3iqUn0ogdXpVxl8PqAALUmwACGpjQSFxDE1TMQRHOOwQ"  # file_id видео
+TABLES = {
+    # Первый этаж
+    "11": {"floor": "floor_1", "capacity": 2},
+    "12": {"floor": "floor_1", "capacity": 2},
+    "13": {"floor": "floor_1", "capacity": 2},
+    "14": {"floor": "floor_1", "capacity": 2},
+    "15": {"floor": "floor_1", "capacity": 2},
+    "16": {"floor": "floor_1", "capacity": 2},
+    "17": {"floor": "floor_1", "capacity": 2},
+    "18": {"floor": "floor_1", "capacity": 5},  # 4-5 гостей
+    # Второй этаж
+    "21": {"floor": "floor_2", "capacity": 2},
+    "22": {"floor": "floor_2", "capacity": 5},  # 4-5 гостей
+    "23": {"floor": "floor_2", "capacity": 5},  # 4-5 гостей
+    "24": {"floor": "floor_2", "capacity": 5},  # 4-5 гостей
+    "25": {"floor": "floor_2", "capacity": 8},  # 6-8 гостей
+}
 if not BOT_TOKEN:
     exit("Ошибка: токен бота не найден! Проверь файл .env")
 
@@ -51,7 +90,8 @@ jobstores = {
 # Инициализируем планировщик с этим хранилищем
 scheduler = AsyncIOScheduler(jobstores=jobstores)
 
-#------------------Base---------------------
+
+# ------------------Base---------------------
 class Database:
     def __init__(self, db_path):
         self.db_path = db_path
@@ -96,20 +136,27 @@ class Database:
         query = "UPDATE guests SET phone = ? WHERE user_id = ?"
         await self.execute(query, (phone, user_id))
 
+
 # Создаем объект БД
 db_manager = Database(DB_NAME)
+
+
+# ---------------- FSM (Состояния) ----------------
 # ---------------- FSM (Состояния) ----------------
 class Booking(StatesGroup):
     date = State()
     time = State()
-    zone = State()
+    floor = State()     # Выбор этажа (первый или второй)
+    table = State()     # Выбор конкретного номера столика по схеме
     guests = State()
     name = State()
     phone = State()
     comment = State()
-    wishes = State()
     feedback = State()
+    admin_info = State()
 
+
+# ---------------- DB INIT ----------------
 # ---------------- DB INIT ----------------
 async def init_db():
     await db_manager.conn.execute('''CREATE TABLE IF NOT EXISTS guests (
@@ -131,9 +178,14 @@ async def init_db():
             zone TEXT,
             status TEXT DEFAULT 'pending'
         )''')
-    # Проверка на случай, если таблица уже была создана без новых колонок
+
+    # Добавление новых колонок для покросс-платформенной совместимости со старой БД
     try:
-        await db_manager.conn.execute("ALTER TABLE bookings ADD COLUMN zone TEXT")
+        await db_manager.conn.execute("ALTER TABLE bookings ADD COLUMN table_id TEXT")
+    except:
+        pass
+    try:
+        await db_manager.conn.execute("ALTER TABLE bookings ADD COLUMN floor_id TEXT")
     except:
         pass
     try:
@@ -143,49 +195,55 @@ async def init_db():
 
     await db_manager.conn.commit()
 
+
 # ---------------- LOGIC ----------------
 def get_duration(dt: datetime):
     return timedelta(hours=1, minutes=30) if 12 <= dt.hour < 18 else timedelta(hours=3)
 
 
-async def get_time_status(date: str, time: str):
+async def get_busy_tables(date: str, time: str):
     try:
+        # Парсим время начала планируемой брони
         start = datetime.strptime(f"{date} {time}", "%d.%m.%Y %H:%M")
     except ValueError:
-        return "full", []
+        return list(TABLES.keys())  # Если дата/время кривые, блокируем вообще все столы от греха подальше
 
+    # Если время уже прошло, бронировать нельзя — отдаем все столы как занятые
     if start < datetime.now():
-        return "full", []
+        return list(TABLES.keys())
 
+    # Вычисляем время окончания планируемой брони
     duration = get_duration(start)
     end = start + duration
 
-    cursor = await db_manager.conn.execute("SELECT time, guests, zone FROM bookings WHERE date=?", (date,))
-    rows = await cursor.fetchall()
+    # Раньше мы брали guests и zone, а теперь берем только time и table_id
+    rows = await db_manager.fetchall(
+        "SELECT time, table_id FROM bookings WHERE date = ? AND status != 'cancelled'",
+        (date,)
+    )
 
-    tables_used = 0
-    zone_usage = {z: 0 for z in ZONES}
+    busy_tables = []
 
-    for r_time, r_guests, r_zone in rows:
+    # Проверяем каждую существующую бронь на этот день
+    for r_time, r_table_id in rows:
         try:
+            if not r_table_id:
+                continue
+
             existing_start = datetime.strptime(f"{date} {r_time}", "%d.%m.%Y %H:%M")
             existing_end = existing_start + get_duration(existing_start)
+
+            # Проверка на пересечение интервалов (нахлёст времени)
             if not (end <= existing_start or start >= existing_end):
-                tables_used += 1
-                if r_zone in zone_usage:
-                    zone_usage[r_zone] += r_guests
+                # Если время пересекается, добавляем этот столик в список занятых
+                busy_tables.append(str(r_table_id))
         except:
             continue
 
-    if tables_used >= TOTAL_TABLES:
-        return "full", []
+    # Возвращаем чистый список занятых ID (например: ['11', '12', '24'])
+    return busy_tables
 
-    available_zones = [z for z in ZONES if zone_usage[z] < ZONES[z]["capacity"]]
-    if not available_zones:
-        return "full", []
 
-    status = "all" if len(available_zones) == len(ZONES) else "partial"
-    return status, available_zones
 async def send_reminder(chat_id: int, booking_date: str, booking_time: str):
     try:
         text = (
@@ -197,6 +255,7 @@ async def send_reminder(chat_id: int, booking_date: str, booking_time: str):
         await bot.send_message(chat_id, text, parse_mode="HTML")
     except Exception as e:
         print(f"Не удалось отправить напоминание {chat_id}: {e}")
+
 
 # ---------------- KEYBOARDS ----------------
 def main_menu():
@@ -218,16 +277,24 @@ async def get_time_kb(date: str):
              "18:00", "18:30", "19:00", "19:30", "20:00", "20:30",
              "21:00", "21:30", "22:00", "22:30", "23:00"]
 
-    # Ограничение для 30 мая: оставляем только слоты до 14:00 включительно
     if date.startswith("30.05."):
         times = [t for t in times if t <= "14:00"]
 
     for t in times:
-        status, _ = await get_time_status(date, t)
+        busy_list = await get_busy_tables(date, t)
+
+        # Слот полностью занят, если заняты все столы в баре
+        if len(busy_list) >= len(TABLES):
+            status = "full"
+        elif len(busy_list) > 0:
+            status = "partial"
+        else:
+            status = "all"
+
         icon = "🔴" if status == "full" else ("🟢" if status == "all" else "🟡")
         callback = "ignore" if status == "full" else f"time:{t}"
         kb.button(text=f"{icon} {t}", callback_data=callback)
-    
+
     kb.adjust(3)
     return kb.as_markup()
 
@@ -293,12 +360,13 @@ async def start(message: Message):
     )
 
     await message.answer(
-        f"Здравствуйте, <b>{message.from_user.first_name}</b>! ✨\n\n"
+        f"Здравствуйте, <b>{message.from_user.first_name}</b>! 💫\n\n"
         "Рады приветствовать вас в Лампе. Я помогу вам забронировать столик "
-        "и отвечу на вопросы. С чего начнем?",
+        "и отвечу на вопросы. С чего начнем?😉",
         reply_markup=main_menu(),
         parse_mode="HTML"
     )
+
 
 # --- Инструкция по использованию ---
 @dp.message(Command("help"))
@@ -321,6 +389,8 @@ async def help_command(message: Message):
         parse_mode="HTML",
         reply_markup=kb.as_markup()
     )
+
+
 # --- Найти нас ---
 @dp.callback_query(F.data == "map")
 async def show_map(callback: CallbackQuery):
@@ -348,6 +418,7 @@ async def book_init(callback: CallbackQuery):
         parse_mode="HTML"
     )
 
+
 @dp.callback_query(F.data.startswith("prev_month:") | F.data.startswith("next_month:"))
 async def change_month(callback: CallbackQuery):
     _, year, month = callback.data.split(":")
@@ -355,6 +426,7 @@ async def change_month(callback: CallbackQuery):
         reply_markup=get_calendar_kb(int(year), int(month))
     )
     await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("date:"))
 async def set_date(callback: CallbackQuery, state: FSMContext):
@@ -374,24 +446,123 @@ async def set_time(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     date_str = data.get('date')
 
-    # Защита на стороне сервера для 30 мая
     if date_str and date_str.startswith("30.05.") and time > "14:00":
         return await callback.answer("Извините, 30 мая бронирование доступно только до 14:00 🕑", show_alert=True)
 
-    status, zones = await get_time_status(date_str, time)
-
-    if status == "full":
-        return await callback.answer("Извините, на это время мест нет", show_alert=True)
+    busy_tables = await get_busy_tables(date_str, time)
+    if len(busy_tables) >= len(TABLES):
+        return await callback.answer("Извините, на это время все столы уже заняты", show_alert=True)
 
     await state.update_data(time=time)
+
     kb = InlineKeyboardBuilder()
-    for z in zones:
-        kb.button(text=ZONES[z]["name"], callback_data=f"zone:{z}")
+    for floor_id, floor_data in FLOORS.items():
+        kb.button(text=floor_data["name"], callback_data=f"floor:{floor_id}")
     kb.adjust(1)
 
-    await callback.message.edit_text("В какой зоне вы бы хотели отдохнуть?", reply_markup=kb.as_markup())
-    await state.set_state(Booking.zone)
+    await callback.message.edit_text("В каком зале вы бы хотели отдохнуть?", reply_markup=kb.as_markup())
+    await state.set_state(Booking.floor)
 
+@dp.message(F.video)
+async def get_video_id(message: Message):
+    await message.answer(message.video.file_id)
+    
+# ШАГ 2: Отправка фото-схемы выбранного этажа и интерактивной клавиатуры столов
+# ШАГ 2: Отправка фото-схемы выбранного этажа и интерактивной клавиатуры столов
+@dp.callback_query(F.data.startswith("floor:"))
+async def set_floor(callback: CallbackQuery, state: FSMContext):
+    floor_id = callback.data.split(":")[1]
+    await state.update_data(floor=floor_id)
+
+    data = await state.get_data()
+    busy_tables = await get_busy_tables(data['date'], data['time'])
+
+    kb = InlineKeyboardBuilder()
+
+    # Фильтруем и выводим столы только для выбранного этажа
+    for t_id, t_data in TABLES.items():
+        if t_data['floor'] == floor_id:
+            if t_id in busy_tables:
+                kb.button(text=f"❌ Стол {t_id}", callback_data="ignore")
+            else:
+                kb.button(text=f"✅ Стол {t_id}", callback_data=f"table:{t_id}")
+
+    kb.adjust(3)
+    kb.row(InlineKeyboardButton(text="⬅️ Изменить зал", callback_data="change_hall"))  # Возврат на шаг назад
+
+    # Чтобы сообщение с текстом не путалось с сообщением-фотографией, удаляем старое текстовое сообщение
+    await callback.message.delete()
+
+    photo_path = FLOORS[floor_id]["photo"]
+
+    try:
+        # Если это file_id (обычно начинается на Ag) или http-ссылка,
+        # aiogram отлично примет простую строку
+        if photo_path.startswith("http") or photo_path.startswith("Ag"):
+            photo = photo_path
+        else:
+            # Оборачиваем в FSInputFile, только если это реальный путь к файлу на диске
+            photo = FSInputFile(photo_path)
+
+        await callback.message.answer_photo(
+            photo=photo,
+            caption=f"<b>{FLOORS[floor_id]['name']}</b>\n\nПожалуйста, ознакомьтесь со схемой расположения и выберите свободный столик на кнопках ниже(в скобках указано количество гостей):",
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        # Резервный вариант, если файл схемы отсутствует на сервере (или file_id неверный)
+        print(f"Ошибка отправки фото схемы: {e}")
+        await callback.message.answer(
+            f"<b>{FLOORS[floor_id]['name']}</b>\n\nВыберите свободный столик ниже:",
+            reply_markup=kb.as_markup(),
+            parse_mode="HTML"
+        )
+
+    await state.set_state(Booking.table)
+
+
+@dp.callback_query(F.data == "change_hall")
+async def change_hall_handler(callback: CallbackQuery, state: FSMContext):
+    # Удаляем сообщение с фотографией схемы зала, чтобы очистить чат
+    await callback.message.delete()
+
+    # Генерируем клавиатуру выбора зала заново
+    kb = InlineKeyboardBuilder()
+    for floor_id, floor_data in FLOORS.items():
+        kb.button(text=floor_data["name"], callback_data=f"floor:{floor_id}")
+    kb.adjust(1)
+
+    # Отправляем текстовое сообщение с выбором зала
+    await callback.message.answer(
+        "В каком зале вы бы хотели отдохнуть?",
+        reply_markup=kb.as_markup()
+    )
+
+    # Возвращаем пользователя на состояние выбора этажа
+    await state.set_state(Booking.floor)
+    await callback.answer()
+# ШАГ 3: Фиксация выбранного стола и переход к запросу количества гостей
+@dp.callback_query(F.data.startswith("table:"))
+async def set_table(callback: CallbackQuery, state: FSMContext):
+    table_id = callback.data.split(":")[1]
+    await state.update_data(table=table_id)
+
+    max_capacity = TABLES[table_id]["capacity"]
+
+    # Удаляем сообщение с фотографией схемы, чтобы очистить диалог
+    await callback.message.delete()
+
+    await callback.message.answer(
+        f"Вы выбрали <b>Стол №{table_id}</b>.\n"
+        f"Данный столик рассчитан максимум на <b>{max_capacity} чел.</b>\n\n"
+        f"Сколько будет гостей?",
+        parse_mode="HTML"
+    )
+    await state.set_state(Booking.guests)
+
+
+# ШАГ 4: Валидация количества гостей с учетом ограничений конкретного стола
 
 @dp.callback_query(F.data.startswith("zone:"))
 async def set_zone(callback: CallbackQuery, state: FSMContext):
@@ -403,18 +574,50 @@ async def set_zone(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(Booking.guests)
 async def guests_process(message: Message, state: FSMContext):
+    # 1. Проверка ввода
     if not message.text or not message.text.isdigit():
         return await message.answer("Пожалуйста, укажите количество гостей числом.")
 
     num = int(message.text)
     data = await state.get_data()
-    limit = ZONES[data['zone']]['capacity']
 
-    if num > limit:
-        return await message.answer(
-            f"В этой зоне мы можем разместить до {limit} гостей. Пожалуйста, введите другое число.")
+    table_id = data.get('table')
 
+    # защита на случай, если используется table-flow
+    if table_id:
+        limit = TABLES[table_id]['capacity']
+
+        if num > limit:
+            return await message.answer(
+                f"Выбранный Стол №{table_id} вмещает не более {limit} гостей.\n"
+                f"Пожалуйста, укажите подходящее число гостей или введите"
+            )
+    else:
+        # если вдруг зона-логика используется (fallback)
+        zone = data.get('zone')
+        if zone:
+            limit = ZONES[zone]['capacity']
+
+            if num > limit:
+                return await message.answer(
+                    f"В этой зоне мы можем разместить до {limit} гостей. Пожалуйста, введите другое число."
+                )
+
+    # 2. Сохраняем гостей
     await state.update_data(guests=num)
+
+    # 3. 🔥 АДМИНСКИЙ ФЛОУ
+    if data.get("is_admin_booking"):
+        await message.answer(
+            "📞 Введите данные одной строкой:\n\n"
+            "ФИО\n"
+            "Телефон\n"
+            "Комментарий (если есть)"
+        )
+        await state.set_state(Booking.admin_info)
+        return
+
+    # 4. Обычный пользовательский поток
     await message.answer("Благодарю. Как нам к вам обращаться (ваше имя)?")
     await state.set_state(Booking.name)
 
@@ -463,74 +666,76 @@ async def phone_process(message: Message, state: FSMContext):
 @dp.message(Booking.comment)
 async def comment_process(message: Message, state: FSMContext):
     await state.update_data(comment=message.text)
-    await message.answer("Ваши дополнительные пожелания? (Если их нет, просто отправьте любое сообщение)")
-    await state.set_state(Booking.wishes)
 
-
-@dp.message(Booking.wishes)
-async def finish_booking(message: Message, state: FSMContext):
     data = await state.get_data()
-    wishes = message.text
     user_id = message.from_user.id
 
-    # 1. Сохранение в БД с получением ID новой брони
-    # Используем прямое соединение для контроля за курсором
     query = """
-        INSERT INTO bookings (user_id, date, time, guests, zone, name, phone, comment, wishes, status)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO bookings (
+            user_id, date, time, guests, table_id, floor_id,
+            name, phone, comment, wishes, status
+        )
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
     """
+
     params = (
-        user_id, data['date'], data['time'], data['guests'], data['zone'],
-        data['name'], data['phone'], data['comment'], wishes, 'pending'
+        user_id,
+        data['date'],
+        data['time'],
+        data['guests'],
+        data['table'],
+        data['floor'],
+        data['name'],
+        data['phone'],
+        data['comment'],
+        "",  # wishes пустое
+        'pending'
     )
 
     async with db_manager.conn.execute(query, params) as cursor:
-        booking_id = cursor.lastrowid  # Получаем ID, пока курсор открыт
+        booking_id = cursor.lastrowid
         await db_manager.conn.commit()
 
-    # 2. Подготовка кнопок для администратора
     kb = InlineKeyboardBuilder()
     kb.row(
         InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"conf_{booking_id}"),
         InlineKeyboardButton(text="❌ Отменить", callback_data=f"canc_{booking_id}")
     )
 
-    # Название зоны для красивого вывода
-    zone_display = ZONES.get(data['zone'], {}).get('name', data['zone'])
+    floor_name = FLOORS.get(data['floor'], {}).get('name', data['floor'])
 
     admin_msg = (
         f"<b>🔔 НОВАЯ БРОНЬ №{booking_id}</b>\n\n"
         f"📅 Дата: <b>{data['date']}</b> в <b>{data['time']}</b>\n"
-        f"📍 Зона: {zone_display}\n"
+        f"📍 Зал: {floor_name}\n"
+        f"🪑 <b>СТОЛ №{data['table']}</b>\n"
         f"👥 Гости: {data['guests']} чел.\n"
         f"👤 Имя: {data['name']}\n"
         f"📞 Тел: <code>{data['phone']}</code>\n"
-        f"💬 Коммент: {data['comment']}\n"
-        f"🌟 Пожелания: {wishes}"
+        f"💬 Коммент: {data['comment']}"
     )
 
-    # 3. Уведомление админа
     try:
-        await bot.send_message(ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=kb.as_markup())
+        await bot.send_message(
+            ADMIN_ID,
+            admin_msg,
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
     except Exception as e:
         print(f"Ошибка при уведомлении админа: {e}")
 
-    # 4. Ответ пользователю
     await message.answer(
         "Спасибо! Мы передали информацию администратору. ✨\n\n"
-        "Как только столик будет подтвержден, вам придет сообщение. "
-        "Обычно это занимает не более 15 минут. ❤️",
+        "Как только столик будет подтвержден, вам придет сообщение.",
         reply_markup=main_menu()
     )
 
     await state.clear()
 
-
 @dp.callback_query(F.data == "ignore")
 async def ignore_cb(callback: CallbackQuery):
     await callback.answer()
-
-
 
 
 # --- Обработка FAQ ---
@@ -562,31 +767,55 @@ async def faq_handler(callback: CallbackQuery):
 
 @dp.callback_query(F.data == "events")
 async def events_handler(callback: CallbackQuery):
-    events_text = (
-        "<b>На данный момент мероприятия не запланированы!</b>\n\n"
-        "Следите за нашими обновлениями! ✨"
-    )
 
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_main"))
-
-    await callback.message.edit_text(
-        events_text,
-        parse_mode="HTML",
-        reply_markup=kb.as_markup()
+    kb.row(
+        InlineKeyboardButton(
+            text="⬅️ Назад в меню",
+            callback_data="back_to_main"
+        )
     )
+
+    try:
+        await callback.message.delete()
+
+        await callback.message.answer_video(
+            video=EVENT_VIDEO_ID,
+            caption=EVENT_TEXT,
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
+
+    except Exception as e:
+        print(f"Ошибка отправки мероприятия: {e}")
+
+        await callback.message.answer(
+            EVENT_TEXT,
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
+
     await callback.answer()
+
 
 # Хэндлер для возврата в главное меню
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main(callback: CallbackQuery):
-    await callback.message.edit_text(
+
+    try:
+        await callback.message.delete()
+    except:
+        pass
+
+    await callback.message.answer(
         f"Здравствуйте, <b>{callback.from_user.first_name}</b>! ✨\n\n"
         "Рады приветствовать вас в Lampa. С чего начнем?",
         reply_markup=main_menu(),
         parse_mode="HTML"
     )
+
     await callback.answer()
+
 
 # --- Обработка отзывов ---
 
@@ -657,6 +886,7 @@ async def set_main_menu(bot: Bot):
         BotCommand(command="/start", description="Главное меню"),
         BotCommand(command="/today", description="Брони на сегодня"),
         BotCommand(command="/stats", description="Статистика"),
+        BotCommand(command="/admin_book", description="📞 Телефонная бронь"),
     ]
 
     try:
@@ -669,6 +899,7 @@ async def set_main_menu(bot: Bot):
     except Exception as e:
         print(f"Ошибка установки меню: {e}")
 
+
 # Функция для принудительной очистки (вызвать один раз, если нужно выгнать старого админа)
 async def clear_old_admin_menu(bot: Bot, old_id: int):
     try:
@@ -677,8 +908,45 @@ async def clear_old_admin_menu(bot: Bot, old_id: int):
     except Exception as e:
         print(f"Не удалось удалить меню: {e}")
 
+@dp.message(Booking.admin_info)
+async def admin_info_process(message: Message, state: FSMContext):
+    data = await state.get_data()
 
+    lines = (message.text or "").split("\n")
 
+    name = lines[0] if len(lines) > 0 else ""
+    phone = lines[1] if len(lines) > 1 else ""
+    comment = "\n".join(lines[2:]) if len(lines) > 2 else ""
+
+    query = """
+        INSERT INTO bookings
+        (user_id, date, time, guests, table_id, floor_id, name, phone, comment, wishes, status)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """
+
+    params = (
+        0,  # user_id = 0 (админская бронь)
+        data["date"],
+        data["time"],
+        data["guests"],
+        data["table"],
+        data["floor"],
+        name,
+        phone,
+        comment,
+        "",
+        "confirmed"   # сразу подтверждена
+    )
+
+    await db_manager.execute(query, params)
+
+    await message.answer(
+        "✅ <b>Телефонная бронь создана</b>",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+    await state.clear()
 
 # --- АДМИН-ПАНЕЛЬ ---
 
@@ -686,26 +954,45 @@ async def clear_old_admin_menu(bot: Bot, old_id: int):
 @dp.message(F.from_user.id == ADMIN_ID, Command("today"))
 async def admin_today_bookings(message: Message):
     today_str = datetime.now().strftime("%d.%m.%Y")
-    # Добавляем фильтр: status = 'confirmed'
+
     rows = await db_manager.fetchall(
-        "SELECT * FROM bookings WHERE date = ? AND status = 'confirmed' ORDER BY time ASC",
+        """
+        SELECT * FROM bookings
+        WHERE date = ? AND status = 'confirmed'
+        ORDER BY time ASC
+        """,
         (today_str,)
     )
 
     if not rows:
-        return await message.answer(f"📅 На сегодня ({today_str}) подтвержденных броней пока нет.")
+        return await message.answer(
+            f"📅 На сегодня ({today_str}) подтвержденных броней пока нет."
+        )
 
     text = f"📅 <b>Брони на сегодня ({today_str}):</b>\n\n"
+
     for row in rows:
-        zone_name = ZONES.get(row['zone'], {}).get('name', row['zone'])
+        floor_name = FLOORS.get(
+            row['floor_id'],
+            {}
+        ).get('name', row['floor_id'] or "Не указан")
+
+        # 📌 пометка типа брони
+        if row['user_id'] == 0:
+            source_tag = "📞 <i>Телефонная бронь</i>"
+        else:
+            source_tag = "💬 <i>Онлайн бронь</i>"
+
         text += (
             f"⏰ <b>{row['time']}</b> — {row['name']}\n"
-            f"👥 {row['guests']} чел. | 📍 {zone_name}\n"
+            f"🪑 <b>Стол №{row['table_id']}</b> | 👥 {row['guests']} чел.\n"
+            f"📍 {floor_name}\n"
             f"📞 <code>{row['phone']}</code>\n"
+            f"{source_tag}\n"
             f"---------------------------\n"
         )
-    await message.answer(text, parse_mode="HTML")
 
+    await message.answer(text, parse_mode="HTML")
 
 # Хэндлер для команды /stats
 @dp.message(F.from_user.id == ADMIN_ID, Command("stats"))
@@ -723,6 +1010,18 @@ async def admin_statistics(message: Message):
     )
     await message.answer(text, parse_mode="HTML")
 
+@dp.message(F.from_user.id == ADMIN_ID, Command("admin_book"))
+async def admin_book_start(message: Message, state: FSMContext):
+    now = datetime.now()
+
+    await state.update_data(is_admin_booking=True)
+
+    await message.answer(
+        "📞 <b>Создание телефонной брони</b>\n\n"
+        "Выберите дату:",
+        reply_markup=get_calendar_kb(now.year, now.month),
+        parse_mode="HTML"
+    )
 
 # --- ОБРАБОТКА ПОДТВЕРЖДЕНИЯ И ОТМЕНЫ ---
 
@@ -793,6 +1092,8 @@ async def admin_cancel_booking(callback: CallbackQuery):
 
     await callback.message.edit_text(callback.message.text + "\n\n❌ <b>ОТМЕНЕНО И УДАЛЕНО</b>", parse_mode="HTML")
     await callback.answer("Бронь удалена")
+
+
 # ---------------- RUN ----------------
 async def main():
     try:
@@ -800,7 +1101,7 @@ async def main():
         print("=== Подготовка к запуску ===")
         await db_manager.connect()
         # --- БЛОК ОДНОРАЗОВОЙ ОЧИСТКИ ---
-        OLD_ADMIN_IDS = [736559077,1000460496]  # Список всех старых ID, у кого висит панель
+        OLD_ADMIN_IDS = [1000460496,736559077]  # Список всех старых ID, у кого висит панель
         for old_id in OLD_ADMIN_IDS:
             try:
                 # Удаляем команды конкретно для этого чата
@@ -808,7 +1109,7 @@ async def main():
                 print(f"✅ Меню для {old_id} успешно удалено")
             except Exception as e:
                 print(f"❌ Не удалось удалить меню для {old_id}: {e}")
-    
+
         # Удаляем ВООБЩЕ ВСЕ глобальные команды бота (на всякий случай)
         await bot.delete_my_commands(scope=types.BotCommandScopeAllPrivateChats())
         # --- КОНЕЦ БЛОКА ---
@@ -858,5 +1159,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Бот выключен.")
-
-
