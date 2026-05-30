@@ -37,11 +37,11 @@ ZONES = {
 FLOORS = {
     "floor_1": {
         "name": "🛋 Первый этаж (основной зал)",
-        "photo": "AgACAgIAAxkBAAIDlGoaxLXluMe4aiG53mNkZbhJHNz5AAKIFmsbl43YSIW-WhNDai5xAQADAgADeQADOwQ"
+        "photo": "AgACAgIAAxkBAAIEdGoa0qFRz0wwxyJkO92KFg_67eK3AAKIFmsbl43YSIwJB61T65ggAQADAgADeQADOwQ"
     },
     "floor_2": {
         "name": "✨ Второй этаж (уютная зона)",
-        "photo": "AgACAgIAAxkBAAIDlmoaxMK_FOSC1dpv7sTeuouYJgfAAAKCFmsbl43YSFcRX-PsM9IcAQADAgADeQADOwQ"
+        "photo": "AgACAgIAAxkBAAIEe2oa0rvXp2vugO2yWTuEDO1ulVynAAKCFmsbl43YSFtcodLBYoPbAQADAgADeQADOwQ"
     }
 }
 EVENT_TEXT = """
@@ -56,7 +56,7 @@ EVENT_TEXT = """
 Мы пригласили ведущего, фотографа, крутых белорусских диджеев, чтобы вы незабываемо провели время❤️
 """
 
-EVENT_VIDEO_ID = "BAACAgIAAxkBAAIDmmoaxTm7lTn3iqUn0ogdXpVxl8PqAALUmwACGpjQSFxDE1TMQRHOOwQ"  # file_id видео
+EVENT_VIDEO_ID = "BAACAgIAAxkBAAIEcmoa0mkjs9qkoad9a-wQSvzjsJOPAALUmwACGpjQSMjTL8-8iQ_qOwQ"  # file_id видео
 TABLES = {
     # Первый этаж
     "11": {"floor": "floor_1", "capacity": 2},
