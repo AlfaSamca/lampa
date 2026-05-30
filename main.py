@@ -463,9 +463,9 @@ async def set_time(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("В каком зале вы бы хотели отдохнуть?", reply_markup=kb.as_markup())
     await state.set_state(Booking.floor)
 
-@dp.message(F.video)
-async def get_video_id(message: Message):
-    await message.answer(message.video.file_id)
+@dp.message(F.photo)
+async def get_photo_id(message: Message):
+    await message.answer(message.photo[-1].file_id)
     
 # ШАГ 2: Отправка фото-схемы выбранного этажа и интерактивной клавиатуры столов
 # ШАГ 2: Отправка фото-схемы выбранного этажа и интерактивной клавиатуры столов
