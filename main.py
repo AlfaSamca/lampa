@@ -154,7 +154,7 @@ class Booking(StatesGroup):
 
     # ответ на отзыв
     reply_feedback = State()
-
+    event_edit = State()
 
 # ---------------- DB INIT ----------------
 # ---------------- DB INIT ----------------
@@ -203,6 +203,30 @@ async def init_db():
         status TEXT DEFAULT 'new'
     )
     ''')
+
+    await db_manager.conn.execute("""
+    CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY,
+        text TEXT
+    )
+    """)
+    row = await db_manager.fetchone(
+        "SELECT id FROM events LIMIT 1"
+    )
+
+    if not row:
+        await db_manager.conn.execute(
+            """
+            INSERT INTO events
+            (id, text)
+            VALUES (?, ?)
+            """,
+            (
+                1,
+                EVENT_TEXT
+            )
+        )
+
     await db_manager.conn.commit()
 
 
@@ -804,7 +828,22 @@ async def faq_handler(callback: CallbackQuery):
 @dp.callback_query(F.data == "events")
 async def events_handler(callback: CallbackQuery):
 
+    event = await db_manager.fetchone(
+        """
+        SELECT *
+        FROM events
+        WHERE id = 1
+        """
+    )
+
+    event_text = (
+        event["text"]
+        if event
+        else EVENT_TEXT
+    )
+
     kb = InlineKeyboardBuilder()
+
     kb.row(
         InlineKeyboardButton(
             text="⬅️ Назад в меню",
@@ -816,22 +855,22 @@ async def events_handler(callback: CallbackQuery):
 
         await callback.message.answer_video(
             video=EVENT_VIDEO_ID,
-            caption=EVENT_TEXT,
+            caption=event_text,
             parse_mode="HTML",
             reply_markup=kb.as_markup()
         )
 
     except Exception as e:
+
         print(f"Ошибка отправки мероприятия: {e}")
 
         await callback.message.answer(
-            EVENT_TEXT,
+            event_text,
             parse_mode="HTML",
             reply_markup=kb.as_markup()
         )
 
     await callback.answer()
-
 
 # Хэндлер для возврата в главное меню
 @dp.callback_query(F.data == "back_to_main")
@@ -973,6 +1012,7 @@ async def set_main_menu(bot: Bot):
         BotCommand(command="/stats", description="Статистика"),
         BotCommand(command="/admin_book", description="📞 Телефонная бронь"),
         BotCommand(command="/all_bookings", description="📋 Все брони"),
+        BotCommand(command="/last_booking", description="🔍 Последняя бронь"),
     ]
 
     try:
@@ -985,6 +1025,27 @@ async def set_main_menu(bot: Bot):
     except Exception as e:
         print(f"Ошибка установки меню: {e}")
 
+    smm_commands = [
+        BotCommand(
+            command="/start",
+            description="Главное меню"
+        ),
+        BotCommand(
+            command="/help",
+            description="Помощь"
+        ),
+        BotCommand(
+            command="/edit_event",
+            description="🎉 Изменить мероприятие"
+        )
+    ]
+
+    await bot.set_my_commands(
+        commands=smm_commands,
+        scope=BotCommandScopeChat(
+            chat_id=SMM_ID
+        )
+    )
 
 # Функция для принудительной очистки (вызвать один раз, если нужно выгнать старого админа)
 async def clear_old_admin_menu(bot: Bot, old_id: int):
@@ -1079,6 +1140,7 @@ async def admin_today_bookings(message: Message):
         )
 
     await message.answer(text, parse_mode="HTML")
+
 @dp.message(F.from_user.id == ADMIN_ID, Command("all_bookings"))
 async def admin_all_bookings(message: Message):
 
@@ -1140,6 +1202,62 @@ async def admin_all_bookings(message: Message):
             parse_mode="HTML",
             reply_markup=kb.as_markup()
         )
+@dp.message(
+    F.from_user.id == ADMIN_ID,
+    Command("last_booking")
+)
+async def show_last_admin_booking(message: Message):
+
+    row = await db_manager.fetchone(
+        """
+        SELECT *
+        FROM bookings
+        WHERE user_id = 0
+        AND status != 'cancelled'
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+
+    if not row:
+        return await message.answer(
+            "📭 Телефонных броней пока нет."
+        )
+
+    floor_name = FLOORS.get(
+        row["floor_id"],
+        {}
+    ).get(
+        "name",
+        row["floor_id"]
+    )
+
+    text = (
+        f"📞 <b>Последняя телефонная бронь</b>\n\n"
+        f"🆔 №{row['id']}\n"
+        f"📅 {row['date']} {row['time']}\n"
+        f"🪑 Стол №{row['table_id']}\n"
+        f"👥 {row['guests']} чел.\n"
+        f"👤 {row['name']}\n"
+        f"📞 <code>{row['phone']}</code>\n"
+        f"📍 {floor_name}\n"
+        f"💬 {row['comment'] or '-'}"
+    )
+
+    kb = InlineKeyboardBuilder()
+
+    kb.row(
+        InlineKeyboardButton(
+            text="❌ Отменить бронь",
+            callback_data=f"cancel_last_admin_{row['id']}"
+        )
+    )
+
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
 # Хэндлер для команды /stats
 @dp.message(F.from_user.id == ADMIN_ID, Command("stats"))
 async def admin_statistics(message: Message):
@@ -1237,6 +1355,61 @@ async def admin_cancel_booking(callback: CallbackQuery):
 
     await callback.message.edit_text(callback.message.text + "\n\n❌ <b>ОТМЕНЕНО И УДАЛЕНО</b>", parse_mode="HTML")
     await callback.answer("Бронь удалена")
+
+@dp.callback_query(
+    F.from_user.id == ADMIN_ID,
+    F.data.startswith("cancel_last_admin_")
+)
+async def cancel_last_admin_booking(
+    callback: CallbackQuery
+):
+    booking_id = int(
+        callback.data.replace(
+            "cancel_last_admin_",
+            ""
+        )
+    )
+
+    row = await db_manager.fetchone(
+        """
+        SELECT *
+        FROM bookings
+        WHERE id = ?
+        """,
+        (booking_id,)
+    )
+
+    if not row:
+        return await callback.answer(
+            "Бронь не найдена",
+            show_alert=True
+        )
+
+    await db_manager.execute(
+        """
+        UPDATE bookings
+        SET status = 'cancelled'
+        WHERE id = ?
+        """,
+        (booking_id,)
+    )
+
+    try:
+        scheduler.remove_job(
+            f"rem_{booking_id}"
+        )
+    except:
+        pass
+
+    await callback.message.edit_text(
+        callback.message.text +
+        "\n\n❌ <b>БРОНЬ ОТМЕНЕНА</b>",
+        parse_mode="HTML"
+    )
+
+    await callback.answer(
+        "Бронь отменена"
+    )
 
 @dp.callback_query(
     F.from_user.id == ADMIN_ID,
@@ -1391,7 +1564,98 @@ async def send_feedback_reply(
         )
 
     await state.clear()
+@dp.message(
+    Booking.event_edit
+)
+async def save_event_text(
+    message: Message,
+    state: FSMContext
+):
 
+    await db_manager.execute(
+        """
+        UPDATE events
+        SET text = ?
+        WHERE id = 1
+        """,
+        (
+            message.text,
+        )
+    )
+
+    await message.answer(
+        "✅ Текст мероприятия обновлен."
+    )
+
+    await state.clear()
+
+@dp.message(
+    F.from_user.id == SMM_ID,
+    Command("edit_event")
+)
+async def edit_event_start(
+    message: Message,
+    state: FSMContext
+):
+
+    event = await db_manager.fetchone(
+        """
+        SELECT *
+        FROM events
+        WHERE id = 1
+        """
+    )
+
+    current_text = (
+        event["text"]
+        if event
+        else "Нет текста"
+    )
+
+    kb = InlineKeyboardBuilder()
+
+    kb.row(
+        InlineKeyboardButton(
+            text="🏠 Главное меню",
+            callback_data="smm_main_menu"
+        )
+    )
+
+    await message.answer(
+        "🎉 Текущее мероприятие:\n\n"
+        f"{current_text}\n\n"
+        "Отправьте новый текст мероприятия.",
+        reply_markup=kb.as_markup()
+    )
+
+    await state.set_state(
+        Booking.event_edit
+    )
+@dp.callback_query(
+    F.from_user.id == SMM_ID,
+    F.data == "smm_main_menu"
+)
+async def smm_main_menu(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    await state.clear()
+
+    try:
+        await callback.message.delete()
+    except:
+        pass
+
+    await callback.message.answer(
+        f"Здравствуйте, <b>{callback.from_user.first_name}</b>! 💫\n\n"
+        "Рады приветствовать вас в Лампе. Я помогу вам забронировать столик "
+        "и отвечу на вопросы. С чего начнем?😉",
+        reply_markup=main_menu(),
+        parse_mode="HTML"
+    )
+
+    await callback.answer()
 # ---------------- RUN ----------------
 async def main():
     try:
