@@ -483,8 +483,8 @@ async def set_time(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     date_str = data.get('date')
 
-    if date_str and date_str.startswith("30.05.") and time > "14:00":
-        return await callback.answer("Извините, 30 мая бронирование доступно только до 14:00 🕑", show_alert=True)
+    if date_str and date_str.startswith("19.07.") and time > "20:00":
+        return await callback.answer("Извините, 19 июля бронирование доступно только до 20:00 🕑", show_alert=True)
 
     busy_tables = await get_busy_tables(date_str, time)
     if len(busy_tables) >= len(TABLES):
