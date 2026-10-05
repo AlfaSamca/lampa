@@ -15,7 +15,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
 from dotenv import load_dotenv
 
-
 # Загружаем переменные из файла .env
 load_dotenv()
 
@@ -53,11 +52,7 @@ EVENT_TEXT = """
 Мы пригласили ведущего, фотографа, крутых белорусских диджеев, чтобы вы незабываемо провели время❤️
 """
 
-# ============================================================
-# НАСТРОЙКИ ВИДЕО ДЛЯ РАЗДЕЛА «МЕРОПРИЯТИЯ»
-# ============================================================
 
-EVENT_VIDEO_ENABLED = False
 TABLES = {
     # Первый этаж
     "11": {"floor": "floor_1", "capacity": 2},
@@ -546,7 +541,7 @@ async def init_db():
 
     await db_manager.conn.execute("""
     CREATE INDEX IF NOT EXISTS idx_analytics_events_user
-    ON analytics_eventгs(user_id)
+    ON analytics_events(user_id)
     """)
 
     await db_manager.conn.execute("""
@@ -855,7 +850,7 @@ def main_menu(user_id=None):
     kb.row(
         InlineKeyboardButton(
             text="🎉 Мероприятия",
-            callback_data="events_v2"
+            callback_data="events"
         )
     )
 
@@ -2426,26 +2421,13 @@ async def faq_handler(callback: CallbackQuery):
     await callback.answer()
 
 
-
-@dp.callback_query(F.data == "events_v2")
-async def events_handler_1(callback: CallbackQuery):
-    """
-    Раздел «Мероприятия».
-
-    ВАЖНО:
-    - отправляем только текст;
-    - не отправляем видео;
-    - не используем EVENT_VIDEO_ID.
-    """
-
-    print("DEBUG: Запущен новый events_handler — только текст")
-
+@dp.callback_query(F.data == "events")
+async def events_handler(callback: CallbackQuery):
     await analytics_action(
         user_id=callback.from_user.id,
         username=callback.from_user.username or "",
-        event_type="events_v2"
+        event_type="events"
     )
-
     event = await db_manager.fetchone(
         """
         SELECT *
@@ -2469,13 +2451,23 @@ async def events_handler_1(callback: CallbackQuery):
         )
     )
 
-    # Разрешаем отправку только текстового сообщения.
-    # answer_video() и send_video() здесь не вызываются.
-    await callback.message.answer(
-        event_text,
-        parse_mode="HTML",
-        reply_markup=kb.as_markup()
-    )
+    try:
+
+        await callback.message.answer_video(
+            caption=event_text,
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
+
+    except Exception as e:
+
+        print(f"Ошибка отправки мероприятия: {e}")
+
+        await callback.message.answer(
+            event_text,
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
 
     await callback.answer()
 
