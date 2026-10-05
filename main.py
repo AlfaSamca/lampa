@@ -52,7 +52,7 @@ EVENT_TEXT = """
 
 Мы пригласили ведущего, фотографа, крутых белорусских диджеев, чтобы вы незабываемо провели время❤️
 """
-
+EVENT_VIDEO_ID = "BAACAgIAAxkBAAIEcmoa0mkjs9qkoad9a-wQSvzjsJOPAALUmwACGpjQSMjTL8-8iQ_qOwQ"  # file_id видео
 
 TABLES = {
     # Первый этаж
@@ -2453,11 +2453,24 @@ async def events_handler(callback: CallbackQuery):
     )
 
 
-    await callback.message.answer(
-        event_text,
-        parse_mode="HTML",
-        reply_markup=kb.as_markup()
-    )
+        try:
+
+        await callback.message.answer_video(
+            video=EVENT_VIDEO_ID,
+            caption=event_text,
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
+
+    except Exception as e:
+
+        print(f"Ошибка отправки мероприятия: {e}")
+
+        await callback.message.answer(
+            event_text,
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
+        )
 
     await callback.answer()
 
