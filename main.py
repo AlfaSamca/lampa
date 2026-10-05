@@ -2451,23 +2451,12 @@ async def events_handler(callback: CallbackQuery):
         )
     )
 
-    try:
 
-        await callback.message.answer_video(
-            caption=event_text,
-            parse_mode="HTML",
-            reply_markup=kb.as_markup()
-        )
-
-    except Exception as e:
-
-        print(f"Ошибка отправки мероприятия: {e}")
-
-        await callback.message.answer(
-            event_text,
-            parse_mode="HTML",
-            reply_markup=kb.as_markup()
-        )
+    await callback.message.answer(
+        event_text,
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
 
     await callback.answer()
 
