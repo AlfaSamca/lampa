@@ -53,7 +53,11 @@ EVENT_TEXT = """
 Мы пригласили ведущего, фотографа, крутых белорусских диджеев, чтобы вы незабываемо провели время❤️
 """
 EVENT_VIDEO_ID = "B111AACAgIAAxkBAAIEcmoa0mkjs9qkoad9a-wQSvzjsJOPAALUmwACGpjQSMjTL8-8iQ_qOwQ"  # file_id видео
+# ============================================================
+# НАСТРОЙКИ ВИДЕО ДЛЯ РАЗДЕЛА «МЕРОПРИЯТИЯ»
+# ============================================================
 
+EVENT_VIDEO_ENABLED = False
 TABLES = {
     # Первый этаж
     "11": {"floor": "floor_1", "capacity": 2},
@@ -2422,13 +2426,26 @@ async def faq_handler(callback: CallbackQuery):
     await callback.answer()
 
 
+
 @dp.callback_query(F.data == "events")
 async def events_handler(callback: CallbackQuery):
+    """
+    Раздел «Мероприятия».
+
+    ВАЖНО:
+    - отправляем только текст;
+    - не отправляем видео;
+    - не используем EVENT_VIDEO_ID.
+    """
+
+    print("DEBUG: Запущен новый events_handler — только текст")
+
     await analytics_action(
         user_id=callback.from_user.id,
         username=callback.from_user.username or "",
         event_type="events"
     )
+
     event = await db_manager.fetchone(
         """
         SELECT *
@@ -2452,25 +2469,13 @@ async def events_handler(callback: CallbackQuery):
         )
     )
 
-
-        try:
-
-        await callback.message.answer_video(
-            video=EVENT_VIDEO_ID,
-            caption=event_text,
-            parse_mode="HTML",
-            reply_markup=kb.as_markup()
-        )
-
-    except Exception as e:
-
-        print(f"Ошибка отправки мероприятия: {e}")
-
-        await callback.message.answer(
-            event_text,
-            parse_mode="HTML",
-            reply_markup=kb.as_markup()
-        )
+    # Разрешаем отправку только текстового сообщения.
+    # answer_video() и send_video() здесь не вызываются.
+    await callback.message.answer(
+        event_text,
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
 
     await callback.answer()
 
