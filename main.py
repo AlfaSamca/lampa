@@ -546,7 +546,7 @@ async def init_db():
 
     await db_manager.conn.execute("""
     CREATE INDEX IF NOT EXISTS idx_analytics_events_user
-    ON analytics_events(user_id)
+    ON analytics_eventгs(user_id)
     """)
 
     await db_manager.conn.execute("""
@@ -855,7 +855,7 @@ def main_menu(user_id=None):
     kb.row(
         InlineKeyboardButton(
             text="🎉 Мероприятия",
-            callback_data="events"
+            callback_data="events_v2"
         )
     )
 
@@ -2427,8 +2427,8 @@ async def faq_handler(callback: CallbackQuery):
 
 
 
-@dp.callback_query(F.data == "events")
-async def events_handler(callback: CallbackQuery):
+@dp.callback_query(F.data == "events_v2")
+async def events_handler_1(callback: CallbackQuery):
     """
     Раздел «Мероприятия».
 
@@ -2443,7 +2443,7 @@ async def events_handler(callback: CallbackQuery):
     await analytics_action(
         user_id=callback.from_user.id,
         username=callback.from_user.username or "",
-        event_type="events"
+        event_type="events_v2"
     )
 
     event = await db_manager.fetchone(
