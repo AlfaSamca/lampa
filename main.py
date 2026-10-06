@@ -22,7 +22,7 @@ load_dotenv()
 # Теперь данные берутся из окружения.
 # Если переменная не найдена, вернется None или дефолтное значение.
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = [8607101615, 736559077]  # ID должен быть числом int(os.getenv("ADMIN_ID"))
+ADMIN_ID = 736559077  # ID должен быть числом int(os.getenv("ADMIN_ID"))
 SMM_ID = 440536095
 DB_NAME = os.getenv("DB_NAME", "lampa.sqlite")
 
@@ -52,7 +52,7 @@ EVENT_TEXT = """
 Мы пригласили ведущего, фотографа, крутых белорусских диджеев, чтобы вы незабываемо провели время❤️
 """
 
-
+EVENT_VIDEO_ID = "BAACAgIAAxkBAAIEcmoa0mkjs9qkoad9a-wQSvzjsJOPAALUmwACGpjQSMjTL8-8iQ_qOwQ"  # file_id видео
 TABLES = {
     # Первый этаж
     "11": {"floor": "floor_1", "capacity": 2},
@@ -4908,7 +4908,7 @@ async def main():
         print("=== Подготовка к запуску ===")
         await db_manager.connect()
         # --- БЛОК ОДНОРАЗОВОЙ ОЧИСТКИ ---
-        OLD_ADMIN_IDS = [1000460496]  # Список всех старых ID, у кого висит панель
+        OLD_ADMIN_IDS = [1000460496, 8607101615]  # Список всех старых ID, у кого висит панель
         for old_id in OLD_ADMIN_IDS:
             try:
                 # Удаляем команды конкретно для этого чата
