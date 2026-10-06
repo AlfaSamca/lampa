@@ -27,7 +27,7 @@ SMM_ID = 440536095
 DB_NAME = os.getenv("DB_NAME", "lampa.sqlite")
 
 # Остальные настройки можно оставить как есть, так как они не секретные
-MENU_URL = "https://menusa.app/11f147d08be313bb8dcc55efc6664fa5"
+MENU_URL = "https://menusa.app/11f147d08be313bb8dcc55efc6664fa56"
 TOTAL_TABLES = 23
 
 FLOORS = {
