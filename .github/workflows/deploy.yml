@@ -13,6 +13,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check VPS password secret
+        env:
+          VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
+        run: |
+          if [ -z "$VPS_PASSWORD" ]; then
+            echo "ERROR: VPS_PASSWORD is EMPTY"
+            exit 1
+          else
+            echo "OK: VPS_PASSWORD is SET"
+          fi
+
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
