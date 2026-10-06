@@ -14,7 +14,7 @@ import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
 from dotenv import load_dotenv
-
+ 
 # Загружаем переменные из файла .env
 load_dotenv()
 
