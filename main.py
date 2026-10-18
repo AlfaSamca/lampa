@@ -33,7 +33,7 @@ TOTAL_TABLES = 23
 FLOORS = {
     "floor_1": {
         "name": "🛋 Первый этаж (основной зал)",
-        "photo": "AgACAgIAAxkBAAIEdGoa0qFRz0wwxyJkO92KFg_67eK3AAKIFmsbl43YSIwJB61T65ggAQADAgADeQADOwQ"
+        "photo": "AgACAgIAAxkBAAIkyWrVIyd_J7hhheBvln0aSBD0816XAALdIGsbPSuwSiPjgFTjxdkNAQADAgADeQADPQQ"
     },
     "floor_2": {
         "name": "✨ Второй этаж (уютная зона)",
@@ -164,9 +164,7 @@ class Database:
 
 # Создаем объект БД
 db_manager = Database(DB_NAME)
-@dp.message(F.photo)
-async def get_photo_id(message: Message):
-    await message.answer(message.photo[-1].file_id)
+
 # ---------------- ANALYTICS FUNCTIONS ----------------
 
 async def analytics_event(
