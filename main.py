@@ -57,10 +57,10 @@ TABLES = {
     # Первый этаж
     "11": {"floor": "floor_1", "capacity": 2},
     "12": {"floor": "floor_1", "capacity": 2},
-    "13": {"floor": "floor_1", "capacity": 2},
+    "13": {"floor": "floor_1", "capacity": 3},
     "14": {"floor": "floor_1", "capacity": 2},
     "15": {"floor": "floor_1", "capacity": 2},
-    "16": {"floor": "floor_1", "capacity": 2},
+    "10": {"floor": "floor_1", "capacity": 2},
     "17": {"floor": "floor_1", "capacity": 2},
     "18": {"floor": "floor_1", "capacity": 5},  # 4-5 гостей
     # Второй этаж
@@ -164,7 +164,9 @@ class Database:
 
 # Создаем объект БД
 db_manager = Database(DB_NAME)
-
+@dp.message(F.photo)
+async def get_photo_id(message: Message):
+    await message.answer(message.photo[-1].file_id)
 # ---------------- ANALYTICS FUNCTIONS ----------------
 
 async def analytics_event(
