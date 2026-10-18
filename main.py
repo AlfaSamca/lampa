@@ -55,12 +55,12 @@ EVENT_TEXT = """
 EVENT_VIDEO_ID = "BAACAgIAAxkBAAIEcmoa0mkjs9qkoad9a-wQSvzjsJOPAALUmwACGpjQSMjTL8-8iQ_qOwQ"  # file_id видео
 TABLES = {
     # Первый этаж
+    "10": {"floor": "floor_1", "capacity": 2},
     "11": {"floor": "floor_1", "capacity": 2},
     "12": {"floor": "floor_1", "capacity": 2},
     "13": {"floor": "floor_1", "capacity": 3},
     "14": {"floor": "floor_1", "capacity": 2},
     "15": {"floor": "floor_1", "capacity": 2},
-    "10": {"floor": "floor_1", "capacity": 2},
     "17": {"floor": "floor_1", "capacity": 2},
     "18": {"floor": "floor_1", "capacity": 5},  # 4-5 гостей
     # Второй этаж
