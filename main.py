@@ -2101,7 +2101,7 @@ async def set_floor(callback: CallbackQuery, state: FSMContext):
 
         await callback.message.answer_photo(
             photo=photo,
-            caption=f"<b>{FLOORS[floor_id]['name']}</b>\n\nПожалуйста, ознакомьтесь со схемой расположения и выберите свободный столик на кнопках ниже (в скобках указано количество гостей):",
+            caption=f"<b>{FLOORS[floor_id]['name']}</b>\n\nПожалуйста, ознакомьтесь со схемой расположения и выберите свободный столик на кнопках ниже (в скобках указано количество гостей): \n\n ❌ означает, что стол занят!",
             reply_markup=kb.as_markup(),
             parse_mode="HTML"
         )
