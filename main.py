@@ -4614,17 +4614,39 @@ async def admin_confirm_booking(callback: CallbackQuery):
         print(f"Ошибка планировщика: {e}")
 
     # Уведомляем клиента
-    try:
-        await bot.send_message(
-            row['user_id'],
-            f"✅ Ваша бронь на <b>{row['date']} ({row['time']})</b> подтверждена! Ждем вас! ❤️",
-            parse_mode="HTML"
-        )
-    except:
-        pass
+    
+    # Уведомляем клиента о подтверждении брони
+    # и добавляем кнопку самостоятельной отмены.
+    if row["user_id"] != 0:
+        try:
+            guest_kb = InlineKeyboardBuilder()
 
-    await callback.message.edit_text(callback.message.text + "\n\n✅ <b>ПОДТВЕРЖДЕНО</b>", parse_mode="HTML")
-    await callback.answer("Бронь подтверждена")
+            guest_kb.row(
+                InlineKeyboardButton(
+                    text="❌ Отменить бронь",
+                    callback_data=f"guest_cancel_ask:{booking_id}"
+                )
+            )
+
+            await bot.send_message(
+                row["user_id"],
+                (
+                    f"✅ <b>Ваша бронь №{booking_id} подтверждена!</b>\n\n"
+                    f"📅 Дата: <b>{row['date']}</b>\n"
+                    f"🕒 Время: <b>{row['time']}</b>\n\n"
+                    "Мы будем рады видеть вас в Лампе! ❤️\n\n"
+                    "Если ваши планы изменятся, вы можете "
+                    "самостоятельно отменить бронь с помощью кнопки ниже."
+                ),
+                parse_mode="HTML",
+                reply_markup=guest_kb.as_markup()
+            )
+
+        except Exception as e:
+            print(
+                f"Не удалось отправить подтверждение "
+                f"гостю {row['user_id']}: {e}"
+            )
 
 
 @dp.callback_query(F.from_user.id == ADMIN_ID, F.data.startswith("canc_"))
@@ -4657,6 +4679,215 @@ async def admin_cancel_booking(callback: CallbackQuery):
 
     await callback.message.edit_text(callback.message.text + "\n\n❌ <b>ОТМЕНЕНО И УДАЛЕНО</b>", parse_mode="HTML")
     await callback.answer("Бронь удалена")
+
+
+# ============================================================
+# ГОСТЬ: ЗАПРОС НА ОТМЕНУ СОБСТВЕННОЙ БРОНИ
+# ============================================================
+
+@dp.callback_query(F.data.startswith("guest_cancel_ask:"))
+async def guest_cancel_ask(callback: CallbackQuery):
+    booking_id = int(callback.data.split(":", 1)[1])
+
+    # Ищем бронь
+    row = await db_manager.fetchone(
+        "SELECT * FROM bookings WHERE id = ?",
+        (booking_id,)
+    )
+
+    # Проверяем, существует ли бронь
+    if not row:
+        await callback.answer(
+            "Бронь не найдена.",
+            show_alert=True
+        )
+        return
+
+    # Гость может управлять только собственной бронью
+    if row["user_id"] != callback.from_user.id:
+        await callback.answer(
+            "Вы не можете отменить эту бронь.",
+            show_alert=True
+        )
+        return
+
+    # Отменять можно только подтверждённую бронь
+    if row["status"] != "confirmed":
+        await callback.answer(
+            "Эта бронь уже отменена или больше не активна.",
+            show_alert=True
+        )
+        return
+
+    # Просим подтвердить действие
+    kb = InlineKeyboardBuilder()
+
+    kb.row(
+        InlineKeyboardButton(
+            text="✅ Да, отменить бронь",
+            callback_data=f"guest_cancel_yes:{booking_id}"
+        )
+    )
+
+    kb.row(
+        InlineKeyboardButton(
+            text="↩️ Нет, оставить бронь",
+            callback_data=f"guest_cancel_no:{booking_id}"
+        )
+    )
+
+    await callback.message.answer(
+        (
+            f"⚠️ <b>Отменить бронь №{booking_id}?</b>\n\n"
+            f"📅 Дата: <b>{row['date']}</b>\n"
+            f"🕒 Время: <b>{row['time']}</b>\n\n"
+            "Если вы подтвердите отмену, столик снова станет "
+            "доступен для бронирования."
+        ),
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# ГОСТЬ: ОТКАЗ ОТ ОТМЕНЫ
+# ============================================================
+
+@dp.callback_query(F.data.startswith("guest_cancel_no:"))
+async def guest_cancel_no(callback: CallbackQuery):
+    booking_id = int(callback.data.split(":", 1)[1])
+
+    row = await db_manager.fetchone(
+        "SELECT * FROM bookings WHERE id = ?",
+        (booking_id,)
+    )
+
+    if not row or row["user_id"] != callback.from_user.id:
+        await callback.answer(
+            "Эта бронь вам недоступна.",
+            show_alert=True
+        )
+        return
+
+    await callback.message.edit_text(
+        f"❤️ Бронь №{booking_id} оставлена без изменений."
+    )
+
+    await callback.answer("Отмена не выполнена")
+
+
+# ============================================================
+# ГОСТЬ: ОКОНЧАТЕЛЬНАЯ ОТМЕНА БРОНИ
+# ============================================================
+
+@dp.callback_query(F.data.startswith("guest_cancel_yes:"))
+async def guest_cancel_yes(callback: CallbackQuery):
+    booking_id = int(callback.data.split(":", 1)[1])
+    user_id = callback.from_user.id
+
+    # Повторно проверяем владельца и актуальный статус
+    row = await db_manager.fetchone(
+        "SELECT * FROM bookings WHERE id = ?",
+        (booking_id,)
+    )
+
+    if not row:
+        await callback.answer(
+            "Бронь не найдена.",
+            show_alert=True
+        )
+        return
+
+    if row["user_id"] != user_id:
+        await callback.answer(
+            "Вы не можете отменить эту бронь.",
+            show_alert=True
+        )
+        return
+
+    if row["status"] != "confirmed":
+        await callback.answer(
+            "Эта бронь уже отменена или не активна.",
+            show_alert=True
+        )
+        return
+
+    # Меняем статус, сохраняя запись в истории
+    await db_manager.execute(
+        """
+        UPDATE bookings
+        SET status = 'cancelled'
+        WHERE id = ?
+          AND user_id = ?
+          AND status = 'confirmed'
+        """,
+        (booking_id, user_id)
+    )
+
+    # Повторно проверяем результат изменения
+    updated_row = await db_manager.fetchone(
+        "SELECT status FROM bookings WHERE id = ?",
+        (booking_id,)
+    )
+
+    if not updated_row or updated_row["status"] != "cancelled":
+        await callback.answer(
+            "Не удалось отменить бронь. Попробуйте ещё раз.",
+            show_alert=True
+        )
+        return
+
+    # Удаляем напоминание, если оно уже запланировано
+    try:
+        scheduler.remove_job(f"rem_{booking_id}")
+    except Exception:
+        pass
+
+    # Записываем отмену в аналитику
+    await analytics_action(
+        user_id=user_id,
+        username=callback.from_user.username or "",
+        event_type="booking_cancelled",
+        event_data=str(booking_id)
+    )
+
+    # Уведомляем администратора
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            (
+                f"❌ <b>Гость отменил бронь №{booking_id}</b>\n\n"
+                f"👤 Имя: {row['name']}\n"
+                f"📅 Дата: {row['date']}\n"
+                f"🕒 Время: {row['time']}\n"
+                f"🪑 Стол №{row['table_id']}\n"
+                f"👥 Гостей: {row['guests']}\n"
+                f"📞 Телефон: <code>{row['phone']}</code>"
+            ),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(
+            f"Не удалось уведомить администратора "
+            f"об отмене брони №{booking_id}: {e}"
+        )
+
+    # Обновляем сообщение гостю
+    await callback.message.edit_text(
+        (
+            f"✅ <b>Бронь №{booking_id} отменена.</b>\n\n"
+            f"📅 Дата: {row['date']}\n"
+            f"🕒 Время: {row['time']}\n\n"
+            "Мы понимаем, что планы могут меняться. "
+            "Будем рады видеть вас в Лампе в другой раз! ❤️"
+        ),
+        parse_mode="HTML"
+    )
+
+    await callback.answer("Бронь отменена")
+
 
 @dp.callback_query(
     F.from_user.id == ADMIN_ID,
