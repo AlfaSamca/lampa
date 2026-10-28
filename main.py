@@ -1900,15 +1900,19 @@ async def help_command(message: Message):
 
 
 # --- Найти нас ---
+
+# --- Открытие меню ---
 @dp.callback_query(F.data == "menu")
 async def show_menu(callback: CallbackQuery):
 
+    # Фиксируем действие в аналитике
     await analytics_action(
         user_id=callback.from_user.id,
         username=callback.from_user.username or "",
         event_type="menu"
     )
 
+    # Создаём клавиатуру
     kb = InlineKeyboardBuilder()
 
     kb.row(
@@ -1925,6 +1929,7 @@ async def show_menu(callback: CallbackQuery):
         )
     )
 
+    # Отправляем ТОЛЬКО сообщение с меню
     await callback.message.answer(
         "📖 <b>Наше меню</b>\n\n"
         "Нажмите кнопку ниже, чтобы открыть меню.",
@@ -1932,19 +1937,48 @@ async def show_menu(callback: CallbackQuery):
         reply_markup=kb.as_markup()
     )
 
+    # Закрываем индикатор загрузки кнопки
     await callback.answer()
+
+
+# --- Найти нас ---
+@dp.callback_query(F.data == "map")
+async def show_map(callback: CallbackQuery):
+
+    # Фиксируем действие в аналитике
+    await analytics_action(
+        user_id=callback.from_user.id,
+        username=callback.from_user.username or "",
+        event_type="map"
+    )
+
+    # Отправляем адрес и информацию о заведении
     address_text = (
         "📍 <b>Наш адрес:</b>\n"
         "г. Минск, ул. Октябрьская, 23\n"
-        "<a href='https://yandex.com/maps/157/minsk/house/Zk4YcwBkTEMHQFtpfXR4cXxlYQ==/'>Открыть в Яндекс.Картах</a>\n\n"
+        "<a href='https://yandex.com/maps/157/minsk/house/Zk4YcwBkTEMHQFtpfXR4cXxlYQ==/'>"
+        "Открыть в Яндекс.Картах</a>\n\n"
         "🕰 <b>Мы открыты:</b>\n"
         "Ежедневно с 12:00 до 23:00\n\n"
         "Ждем вас в гости! ✨"
     )
-    await callback.message.answer(address_text, parse_mode="HTML", disable_web_page_preview=False)
-    # Отправка локации (координаты)
-    await callback.message.answer_location(latitude=53.890065, longitude=27.574560)
+
+    await callback.message.answer(
+        address_text,
+        parse_mode="HTML",
+        disable_web_page_preview=False
+    )
+
+    # Отправляем геолокацию заведения
+    await callback.message.answer_location(
+        latitude=53.890065,
+        longitude=27.574560
+    )
+
+    # Закрываем индикатор загрузки кнопки
     await callback.answer()
+
+
 
 
 # --- Процесс бронирования ---
