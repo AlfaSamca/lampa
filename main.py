@@ -4647,7 +4647,17 @@ async def admin_confirm_booking(callback: CallbackQuery):
                 f"Не удалось отправить подтверждение "
                 f"гостю {row['user_id']}: {e}"
             )
-
+    try:
+        await callback.message.edit_text(
+            callback.message.text
+            + "\n\n✅ <b>ПОДТВЕРЖДЕНО</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(
+            f"Не удалось обновить сообщение "
+            f"о брони №{booking_id}: {e}"
+        )
 
 @dp.callback_query(F.from_user.id == ADMIN_ID, F.data.startswith("canc_"))
 async def admin_cancel_booking(callback: CallbackQuery):
