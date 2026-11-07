@@ -1577,21 +1577,17 @@ def get_admin_block_calendar_kb(
 # АДМИН: ОТКРЫТИЕ КАЛЕНДАРЯ БЛОКИРОВКИ
 # ============================================================
 
+# ============================================================
+# АДМИН: ОТКРЫТИЕ КАЛЕНДАРЯ БЛОКИРОВКИ ДАТ
+# ============================================================
+
 @dp.callback_query(
     F.from_user.id == ADMIN_ID,
     F.data == "admin_block_date_start"
 )
-async def admin_block_date_start(
-        callback: CallbackQuery
-):
-    """
-    Открывает календарь управления блокировками.
-
-    Обработчик доступен только ADMIN_ID.
-    """
+async def admin_block_date_start(callback: CallbackQuery):
 
     now = datetime.now()
-
     blocked_dates = await get_blocked_dates()
 
     await callback.message.edit_text(
@@ -1609,194 +1605,162 @@ async def admin_block_date_start(
 
     await callback.answer()
 
-    # ============================================================
-    # АДМИН: ПЕРЕКЛЮЧЕНИЕ МЕСЯЦА
-    # ============================================================
 
-    @dp.callback_query(
-        F.from_user.id == ADMIN_ID,
-        F.data.startswith("admin_block_prev:")
-        | F.data.startswith("admin_block_next:")
+# ============================================================
+# АДМИН: ПЕРЕКЛЮЧЕНИЕ МЕСЯЦА
+# ============================================================
+
+@dp.callback_query(
+    F.from_user.id == ADMIN_ID,
+    F.data.startswith("admin_block_prev:")
+    | F.data.startswith("admin_block_next:")
+)
+async def admin_block_change_month(callback: CallbackQuery):
+
+    try:
+        _, year, month = callback.data.split(":")
+        year = int(year)
+        month = int(month)
+
+        if not 1 <= month <= 12:
+            raise ValueError("Некорректный месяц")
+
+    except (ValueError, TypeError):
+        await callback.answer(
+            "❌ Ошибка календаря.",
+            show_alert=True
+        )
+        return
+
+    blocked_dates = await get_blocked_dates()
+
+    await callback.message.edit_reply_markup(
+        reply_markup=get_admin_block_calendar_kb(
+            year,
+            month,
+            blocked_dates
+        )
     )
-    async def admin_block_change_month(
-            callback: CallbackQuery
-    ):
-        """
-        Переключает месяц в админском календаре.
-        """
 
-        try:
+    await callback.answer()
 
-            _, year, month = callback.data.split(":")
 
-            year = int(year)
-            month = int(month)
+# ============================================================
+# АДМИН: ВЫБОР КОНКРЕТНОЙ ДАТЫ
+# ============================================================
 
-        except (ValueError, TypeError):
+@dp.callback_query(
+    F.from_user.id == ADMIN_ID,
+    F.data.startswith("admin_block_date:")
+)
+async def admin_block_date_select(callback: CallbackQuery):
 
-            await callback.answer(
-                "❌ Ошибка календаря.",
-                show_alert=True
+    date_str = callback.data.split(":", 1)[1]
+
+    try:
+        selected_date = datetime.strptime(
+            date_str,
+            "%d.%m.%Y"
+        ).date()
+
+    except ValueError:
+        await callback.answer(
+            "❌ Некорректная дата.",
+            show_alert=True
+        )
+        return
+
+    if selected_date < datetime.now().date():
+        await callback.answer(
+            "❌ Нельзя изменить прошедшую дату.",
+            show_alert=True
+        )
+        return
+
+    blocked = await is_date_blocked(date_str)
+
+    # ---------------------------------------------------------
+    # ЕСЛИ ДАТА УЖЕ ЗАБЛОКИРОВАНА
+    # ---------------------------------------------------------
+
+    if blocked:
+
+        kb = InlineKeyboardBuilder()
+
+        kb.row(
+            InlineKeyboardButton(
+                text="🔓 Снять блокировку",
+                callback_data=f"admin_unblock_confirm:{date_str}"
             )
+        )
 
-            return
-
-        blocked_dates = await get_blocked_dates()
-
-        await callback.message.edit_reply_markup(
-            reply_markup=get_admin_block_calendar_kb(
-                year,
-                month,
-                blocked_dates
+        kb.row(
+            InlineKeyboardButton(
+                text="⬅️ Назад к календарю",
+                callback_data="admin_block_date_start"
             )
+        )
+
+        await callback.message.edit_text(
+            f"🔒 <b>{date_str}</b>\n\n"
+            "Бронирования на эту дату уже закрыты.\n\n"
+            "Хотите снять блокировку?",
+            parse_mode="HTML",
+            reply_markup=kb.as_markup()
         )
 
         await callback.answer()
+        return
 
-        # ============================================================
-        # АДМИН: ВЫБОР ДАТЫ
-        # ============================================================
+    # ---------------------------------------------------------
+    # ЕСЛИ ДАТА СВОБОДНА
+    # ---------------------------------------------------------
 
-        @dp.callback_query(
-            F.from_user.id == ADMIN_ID,
-            F.data.startswith("admin_block_date:")
+    active_bookings = await get_active_bookings_count(date_str)
+
+    kb = InlineKeyboardBuilder()
+
+    kb.row(
+        InlineKeyboardButton(
+            text="✅ Заблокировать",
+            callback_data=f"admin_block_confirm:{date_str}"
         )
-        async def admin_block_date_select(
-                callback: CallbackQuery
-        ):
-            """
-            Обработка выбора конкретной даты администратором.
-            """
+    )
 
-            date_str = callback.data.split(":", 1)[1]
+    kb.row(
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data="admin_block_date_start"
+        )
+    )
 
-            # ---------------------------------------------------------
-            # Проверяем формат даты
-            # ---------------------------------------------------------
+    if active_bookings > 0:
 
-            try:
+        warning_text = (
+            f"⚠️ <b>Внимание!</b>\n\n"
+            f"На {date_str} уже есть "
+            f"<b>{active_bookings}</b> активных броней.\n\n"
+            "Блокировка даты <b>не отменит</b> "
+            "существующие бронирования.\n"
+            "Она только запретит создавать новые "
+            "онлайн-брони.\n\n"
+        )
 
-                selected_date = datetime.strptime(
-                    date_str,
-                    "%d.%m.%Y"
-                ).date()
+    else:
 
-            except ValueError:
+        warning_text = (
+            f"На <b>{date_str}</b> активных броней нет.\n\n"
+        )
 
-                await callback.answer(
-                    "❌ Некорректная дата.",
-                    show_alert=True
-                )
+    await callback.message.edit_text(
+        warning_text +
+        "🔒 <b>Заблокировать бронирования "
+        f"на эту дату?</b>",
+        parse_mode="HTML",
+        reply_markup=kb.as_markup()
+    )
 
-                return
-
-            # ---------------------------------------------------------
-            # Прошедшую дату блокировать нельзя
-            # ---------------------------------------------------------
-
-            if selected_date < datetime.now().date():
-                await callback.answer(
-                    "❌ Нельзя изменить прошедшую дату.",
-                    show_alert=True
-                )
-
-                return
-
-            # ---------------------------------------------------------
-            # Проверяем текущий статус даты
-            # ---------------------------------------------------------
-
-            blocked = await is_date_blocked(date_str)
-
-            # =========================================================
-            # ЕСЛИ ДАТА УЖЕ ЗАБЛОКИРОВАНА
-            # =========================================================
-
-            if blocked:
-                kb = InlineKeyboardBuilder()
-
-                kb.row(
-                    InlineKeyboardButton(
-                        text="🔓 Снять блокировку",
-                        callback_data=(
-                            f"admin_unblock_confirm:{date_str}"
-                        )
-                    )
-                )
-
-                kb.row(
-                    InlineKeyboardButton(
-                        text="⬅️ Назад к календарю",
-                        callback_data="admin_block_date_start"
-                    )
-                )
-
-                await callback.message.edit_text(
-                    f"🔒 <b>{date_str}</b>\n\n"
-                    "Бронирования на эту дату уже закрыты.\n\n"
-                    "Хотите снять блокировку?",
-                    parse_mode="HTML",
-                    reply_markup=kb.as_markup()
-                )
-
-                await callback.answer()
-
-                return
-
-            # =========================================================
-            # ЕСЛИ ДАТА СВОБОДНА
-            # =========================================================
-
-            active_bookings = await get_active_bookings_count(
-                date_str
-            )
-
-            kb = InlineKeyboardBuilder()
-
-            kb.row(
-                InlineKeyboardButton(
-                    text="✅ Заблокировать",
-                    callback_data=(
-                        f"admin_block_confirm:{date_str}"
-                    )
-                )
-            )
-
-            kb.row(
-                InlineKeyboardButton(
-                    text="❌ Отмена",
-                    callback_data="admin_block_date_start"
-                )
-            )
-
-            if active_bookings > 0:
-
-                warning_text = (
-                    f"⚠️ <b>Внимание!</b>\n\n"
-                    f"На {date_str} уже есть "
-                    f"<b>{active_bookings}</b> активных броней.\n\n"
-                    "Блокировка даты <b>не отменит</b> "
-                    "существующие бронирования.\n"
-                    "Она только запретит создавать новые "
-                    "онлайн-брони.\n\n"
-                )
-
-            else:
-
-                warning_text = (
-                    f"На <b>{date_str}</b> активных броней нет.\n\n"
-                )
-
-            await callback.message.edit_text(
-                warning_text +
-                "🔒 <b>Заблокировать бронирования "
-                f"на эту дату?</b>",
-                parse_mode="HTML",
-                reply_markup=kb.as_markup()
-            )
-
-            await callback.answer()
-
+    await callback.answer()
 
 # ============================================================
 # АДМИН: ПОДТВЕРЖДЕНИЕ БЛОКИРОВКИ
@@ -1981,30 +1945,26 @@ async def admin_unblock_confirm(
     # АДМИН: ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
     # ============================================================
 
-    @dp.callback_query(
-        F.from_user.id == ADMIN_ID,
-        F.data == "admin_block_back"
+    # ============================================================
+    # АДМИН: ВОЗВРАТ В ГЛАВНОЕ МЕНЮ
+    # ============================================================
+
+
+@dp.callback_query(
+    F.from_user.id == ADMIN_ID,
+    F.data == "admin_block_back"
+)
+async def admin_block_back(callback: CallbackQuery):
+    await callback.message.edit_text(
+        f"Здравствуйте, "
+        f"<b>{callback.from_user.first_name}</b>! ✨\n\n"
+        "Рады приветствовать вас в Лампе. "
+        "С чего начнем?",
+        parse_mode="HTML",
+        reply_markup=main_menu(callback.from_user.id)
     )
-    async def admin_block_back(
-            callback: CallbackQuery
-    ):
-        """
-        Возвращает администратора в главное меню.
-        """
 
-        await callback.message.edit_text(
-            f"Здравствуйте, "
-            f"<b>{callback.from_user.first_name}</b>! ✨\n\n"
-            "Рады приветствовать вас в Лампе. "
-            "С чего начнем?",
-            parse_mode="HTML",
-            reply_markup=main_menu(
-                callback.from_user.id
-            )
-        )
-
-        await callback.answer()
-
+    await callback.answer()
 
 # ---------------- HANDLERS ----------------
 
