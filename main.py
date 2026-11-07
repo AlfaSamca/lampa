@@ -2,7 +2,7 @@ import asyncio
 import calendar
 from datetime import datetime, timedelta
 from aiogram.types import FSInputFile
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, \
     ReplyKeyboardRemove, BotCommand, BotCommandScopeChat  # Добавь BotCommandScopeChat и BotCommand
 from aiogram.filters import CommandStart, Command
@@ -14,7 +14,7 @@ import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import os
 from dotenv import load_dotenv
- 
+
 # Загружаем переменные из файла .env
 load_dotenv()
 
@@ -22,13 +22,27 @@ load_dotenv()
 # Теперь данные берутся из окружения.
 # Если переменная не найдена, вернется None или дефолтное значение.
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = 8607101615   # ID должен быть числом int(os.getenv("ADMIN_ID"))
+ADMIN_ID = 8607101615  # ID должен быть числом int(os.getenv("ADMIN_ID"))
 SMM_ID = 440536095
 DB_NAME = os.getenv("DB_NAME", "lampa.sqlite")
 
 # Остальные настройки можно оставить как есть, так как они не секретные
 MENU_URL = "https://menusa.app/11f147d08be313bb8dcc55efc6664fa56"
 TOTAL_TABLES = 23
+
+# ============================================================
+# СОГЛАСИЕ НА ОБРАБОТКУ ПЕРСОНАЛЬНЫХ ДАННЫХ
+# ============================================================
+
+# Ссылка на утвержденный документ.
+# Здесь необходимо указать прямую ссылку на документ.
+
+PERSONAL_DATA_DOCUMENT_URL = "https://disk.yandex.com/i/l7PfJ9j2ESjjTg"
+
+# Версия документа.
+# При изменении документа увеличиваем номер версии.
+
+PERSONAL_DATA_DOCUMENT_VERSION = "1.0"
 
 FLOORS = {
     "floor_1": {
@@ -75,6 +89,87 @@ if not BOT_TOKEN:
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+# ============================================================
+# MIDDLEWARE ОБЯЗАТЕЛЬНОГО СОГЛАСИЯ
+# ============================================================
+
+
+class PersonalDataConsentMiddleware(BaseMiddleware):
+
+    async def __call__(
+        self,
+        handler,
+        event,
+        data
+    ):
+
+        user = getattr(event, "from_user", None)
+
+        if not user:
+            return await handler(event, data)
+
+        user_id = user.id
+
+        # Администраторы и SMM-сотрудник
+        # не проходят гостевой сценарий согласия.
+
+        if user_id in (ADMIN_ID, SMM_ID):
+            return await handler(event, data)
+
+        # Команда /start всегда разрешена.
+        # Она сама проверит наличие согласия.
+
+        if isinstance(event, Message):
+
+            if event.text and event.text.startswith("/start"):
+                return await handler(event, data)
+
+        # Проверяем наличие актуального согласия.
+
+        if await has_personal_data_consent(user_id):
+            return await handler(event, data)
+
+        # Разрешаем только обработчик принятия согласия.
+
+        if isinstance(event, CallbackQuery):
+
+            if event.data and event.data.startswith(
+                "consent_accept:"
+            ):
+                return await handler(event, data)
+
+            await event.answer(
+                "Для продолжения необходимо принять "
+                "согласие на обработку персональных данных.",
+                show_alert=True
+            )
+
+            await show_personal_data_consent(
+                event.message
+            )
+
+            return
+
+        # Все остальные сообщения блокируются.
+
+        if isinstance(event, Message):
+
+            await show_personal_data_consent(event)
+
+            return
+
+        return
+
+
+# Подключаем middleware к сообщениям и кнопкам.
+
+dp.message.outer_middleware(
+    PersonalDataConsentMiddleware()
+)
+
+dp.callback_query.outer_middleware(
+    PersonalDataConsentMiddleware()
+)
 booking_lock = asyncio.Lock()
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 
@@ -165,13 +260,79 @@ class Database:
 # Создаем объект БД
 db_manager = Database(DB_NAME)
 
+# ============================================================
+# ФУНКЦИИ РАБОТЫ С СОГЛАСИЯМИ
+# ============================================================
+
+
+async def has_personal_data_consent(user_id: int) -> bool:
+    """
+    Проверяет, принял ли пользователь актуальную
+    версию документа об обработке персональных данных.
+    """
+
+    row = await db_manager.fetchone(
+        """
+        SELECT accepted, document_version
+        FROM personal_data_consents
+        WHERE user_id = ?
+        LIMIT 1
+        """,
+        (user_id,)
+    )
+
+    if not row:
+        return False
+
+    return (
+        row["accepted"] == 1
+        and row["document_version"] == PERSONAL_DATA_DOCUMENT_VERSION
+    )
+
+
+async def save_personal_data_consent(user_id: int):
+    """
+    Сохраняет факт принятия согласия.
+    """
+
+    accepted_at = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    await db_manager.execute(
+        """
+        INSERT INTO personal_data_consents
+        (
+            user_id,
+            accepted,
+            accepted_at,
+            document_version,
+            document_url
+        )
+        VALUES (?, 1, ?, ?, ?)
+
+        ON CONFLICT(user_id) DO UPDATE SET
+
+            accepted = 1,
+            accepted_at = excluded.accepted_at,
+            document_version = excluded.document_version,
+            document_url = excluded.document_url
+
+        """,
+        (
+            user_id,
+            accepted_at,
+            PERSONAL_DATA_DOCUMENT_VERSION,
+            PERSONAL_DATA_DOCUMENT_URL
+        )
+    )
 # ---------------- ANALYTICS FUNCTIONS ----------------
 
 async def analytics_event(
-    user_id: int,
-    event_type: str,
-    username: str = "",
-    event_data: str = ""
+        user_id: int,
+        event_type: str,
+        username: str = "",
+        event_data: str = ""
 ):
     """
     Записывает любое действие пользователя.
@@ -316,8 +477,8 @@ async def analytics_visit(user_id: int, username: str = ""):
 
 
 async def analytics_touch(
-    user_id: int,
-    username: str = ""
+        user_id: int,
+        username: str = ""
 ):
     """
     Обновляет последнюю активность пользователя
@@ -357,10 +518,10 @@ async def analytics_touch(
 
 
 async def analytics_action(
-    user_id: int,
-    username: str,
-    event_type: str,
-    event_data: str = ""
+        user_id: int,
+        username: str,
+        event_type: str,
+        event_data: str = ""
 ):
     """
     Универсальная функция:
@@ -397,6 +558,7 @@ class Booking(StatesGroup):
     reply_feedback = State()
     event_edit = State()
 
+
 # ---------------- DB INIT ----------------
 # ---------------- DB INIT ----------------
 async def init_db():
@@ -409,6 +571,32 @@ async def init_db():
             source TEXT DEFAULT 'unknown'
         )
     ''')
+    # ============================================================
+    # СОГЛАСИЯ НА ОБРАБОТКУ ПЕРСОНАЛЬНЫХ ДАННЫХ
+    # ============================================================
+
+    await db_manager.conn.execute("""
+        CREATE TABLE IF NOT EXISTS personal_data_consents (
+
+            user_id INTEGER PRIMARY KEY,
+
+            accepted INTEGER NOT NULL DEFAULT 0,
+
+            accepted_at TEXT,
+
+            document_version TEXT,
+
+            document_url TEXT
+
+        )
+    """)
+
+    # Индекс для быстрого поиска согласий
+
+    await db_manager.conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_personal_data_consents_user
+        ON personal_data_consents(user_id)
+    """)
 
     # Добавляем source в существующую БД
     try:
@@ -603,6 +791,7 @@ async def init_db():
 
     await db_manager.conn.commit()
 
+
 # ============================================================
 # БЛОКИРОВКА ДАТ
 # ============================================================
@@ -662,9 +851,9 @@ async def get_blocked_dates() -> set:
 
 
 async def block_date(
-    date_str: str,
-    reason: str = "",
-    created_by: int = ADMIN_ID
+        date_str: str,
+        reason: str = "",
+        created_by: int = ADMIN_ID
 ) -> bool:
     """
     Блокирует дату.
@@ -702,6 +891,7 @@ async def block_date(
 
     return True
 
+
 async def unblock_date(date_str: str) -> bool:
     """
     Снимает блокировку с даты.
@@ -724,6 +914,7 @@ async def unblock_date(date_str: str) -> bool:
 
     return True
 
+
 async def get_active_bookings_count(date_str: str) -> int:
     """
     Возвращает количество активных броней
@@ -743,6 +934,8 @@ async def get_active_bookings_count(date_str: str) -> int:
     )
 
     return row["count"] if row else 0
+
+
 # ---------------- LOGIC ----------------
 def get_duration(dt: datetime):
     return timedelta(hours=1, minutes=30) if 12 <= dt.hour < 18 else timedelta(hours=3)
@@ -811,6 +1004,67 @@ async def send_reminder(chat_id: int, booking_date: str, booking_time: str):
 
 # ---------------- KEYBOARDS ----------------
 # ---------------- KEYBOARDS ----------------
+# ============================================================
+# КЛАВИАТУРА СОГЛАСИЯ НА ОБРАБОТКУ ПЕРСОНАЛЬНЫХ ДАННЫХ
+# ============================================================
+
+
+def personal_data_consent_kb(source="unknown"):
+
+    kb = InlineKeyboardBuilder()
+
+    # Кнопка принятия согласия
+
+    kb.row(
+        InlineKeyboardButton(
+            text="✅ Согласен",
+            callback_data=f"consent_accept:{source}"
+        )
+    )
+
+    # Кнопка ознакомления с документом
+
+    kb.row(
+        InlineKeyboardButton(
+            text="📄 Ознакомиться с документом",
+            url=PERSONAL_DATA_DOCUMENT_URL
+        )
+    )
+
+    return kb.as_markup()
+# ============================================================
+# ПОКАЗ СОГЛАСИЯ НА ОБРАБОТКУ ПЕРСОНАЛЬНЫХ ДАННЫХ
+# ============================================================
+
+
+async def show_personal_data_consent(
+    message: Message,
+    source="unknown"
+):
+
+    consent_text = (
+        "✨ <b>Добро пожаловать в Лампу!</b>\n\n"
+
+        "Перед началом использования нашего Telegram-бота "
+        "просим вас ознакомиться с условиями обработки "
+        "персональных данных.\n\n"
+
+        "Для продолжения работы необходимо подтвердить "
+        "согласие на обработку персональных данных.\n\n"
+
+        "Нажимая кнопку «✅ Согласен», вы подтверждаете "
+        "своё согласие на обработку персональных данных "
+        "в соответствии с документом, размещённым ниже.\n\n"
+
+        "📄 Рекомендуем внимательно ознакомиться "
+        "с документом перед подтверждением."
+    )
+
+    await message.answer(
+        consent_text,
+        parse_mode="HTML",
+        reply_markup=personal_data_consent_kb(source)
+    )
 
 def main_menu(user_id=None):
     kb = InlineKeyboardBuilder()
@@ -835,7 +1089,6 @@ def main_menu(user_id=None):
     # ---------------------------------------------------------
 
     if user_id == ADMIN_ID:
-
         kb.row(
             InlineKeyboardButton(
                 text="🔒 Заблокировать бронирования",
@@ -877,6 +1130,7 @@ def main_menu(user_id=None):
     )
 
     return kb.as_markup()
+
 
 async def get_time_kb(date: str):
     kb = InlineKeyboardBuilder()
@@ -984,7 +1238,6 @@ def get_calendar_kb(year, month, blocked_dates=None):
 
             # Пустая ячейка
             if day == 0:
-
                 buttons.append(
                     InlineKeyboardButton(
                         text=" ",
@@ -1061,11 +1314,11 @@ def get_calendar_kb(year, month, blocked_dates=None):
 
     # Можно листать назад только до текущего месяца
     if (
-        year > now.year
-        or (
+            year > now.year
+            or (
             year == now.year
             and month > now.month
-        )
+    )
     ):
 
         kb.row(
@@ -1094,14 +1347,15 @@ def get_calendar_kb(year, month, blocked_dates=None):
 
     return kb.as_markup()
 
+
 # ============================================================
 # АДМИНСКИЙ КАЛЕНДАРЬ БЛОКИРОВКИ ДАТ
 # ============================================================
 
 def get_admin_block_calendar_kb(
-    year: int,
-    month: int,
-    blocked_dates=None
+        year: int,
+        month: int,
+        blocked_dates=None
 ):
     """
     Календарь администратора для управления блокировками.
@@ -1188,7 +1442,6 @@ def get_admin_block_calendar_kb(
 
             # Пустая ячейка
             if day == 0:
-
                 buttons.append(
                     InlineKeyboardButton(
                         text=" ",
@@ -1263,11 +1516,11 @@ def get_admin_block_calendar_kb(
 
     # Назад нельзя уходить дальше текущего месяца.
     if (
-        year > today.year
-        or (
+            year > today.year
+            or (
             year == today.year
             and month > today.month
-        )
+    )
     ):
 
         kb.row(
@@ -1329,7 +1582,7 @@ def get_admin_block_calendar_kb(
     F.data == "admin_block_date_start"
 )
 async def admin_block_date_start(
-    callback: CallbackQuery
+        callback: CallbackQuery
 ):
     """
     Открывает календарь управления блокировками.
@@ -1544,6 +1797,7 @@ async def admin_block_date_start(
 
             await callback.answer()
 
+
 # ============================================================
 # АДМИН: ПОДТВЕРЖДЕНИЕ БЛОКИРОВКИ
 # ============================================================
@@ -1553,7 +1807,7 @@ async def admin_block_date_start(
     F.data.startswith("admin_block_confirm:")
 )
 async def admin_block_confirm(
-    callback: CallbackQuery
+        callback: CallbackQuery
 ):
     """
     Фактически добавляет дату в blocked_dates.
@@ -1582,7 +1836,6 @@ async def admin_block_confirm(
         return
 
     if selected_date < datetime.now().date():
-
         await callback.answer(
             "❌ Нельзя блокировать прошедшую дату.",
             show_alert=True
@@ -1595,7 +1848,6 @@ async def admin_block_confirm(
     # ---------------------------------------------------------
 
     if await is_date_blocked(date_str):
-
         await callback.answer(
             "Эта дата уже заблокирована.",
             show_alert=True
@@ -1614,7 +1866,6 @@ async def admin_block_confirm(
     )
 
     if not success:
-
         await callback.answer(
             "❌ Не удалось заблокировать дату.",
             show_alert=True
@@ -1656,6 +1907,7 @@ async def admin_block_confirm(
         "Дата заблокирована."
     )
 
+
 # ============================================================
 # АДМИН: ПОДТВЕРЖДЕНИЕ РАЗБЛОКИРОВКИ
 # ============================================================
@@ -1665,7 +1917,7 @@ async def admin_block_confirm(
     F.data.startswith("admin_unblock_confirm:")
 )
 async def admin_unblock_confirm(
-    callback: CallbackQuery
+        callback: CallbackQuery
 ):
     """
     Снимает блокировку с даты.
@@ -1678,7 +1930,6 @@ async def admin_unblock_confirm(
     # ---------------------------------------------------------
 
     if not await is_date_blocked(date_str):
-
         await callback.answer(
             "Эта дата уже разблокирована.",
             show_alert=True
@@ -1695,7 +1946,6 @@ async def admin_unblock_confirm(
     )
 
     if not success:
-
         await callback.answer(
             "❌ Не удалось снять блокировку.",
             show_alert=True
@@ -1754,27 +2004,138 @@ async def admin_unblock_confirm(
         )
 
         await callback.answer()
+
+
 # ---------------- HANDLERS ----------------
 
+
+# ============================================================
+# ФУНКЦИЯ ЗАВЕРШЕНИЯ ЗАПУСКА БОТА
+# ============================================================
+
+async def complete_start(
+    message: Message,
+    user: types.User,
+    source: str = "unknown"
+):
+
+    username = user.username or "NoUsername"
+
+    # ---------------------------------------------------------
+    # СОХРАНЯЕМ ПОЛЬЗОВАТЕЛЯ
+    # ---------------------------------------------------------
+
+    await db_manager.add_guest(
+        user_id=user.id,
+        username=username,
+        source=source
+    )
+
+    # ---------------------------------------------------------
+    # ФИКСИРУЕМ ПОСЕЩЕНИЕ
+    # ---------------------------------------------------------
+
+    await analytics_visit(
+        user_id=user.id,
+        username=username
+    )
+
+    # ---------------------------------------------------------
+    # ФИКСИРУЕМ ИСТОЧНИК ПЕРЕХОДА
+    # ---------------------------------------------------------
+
+    await analytics_action(
+        user_id=user.id,
+        username=username,
+        event_type="source_detected",
+        event_data=source
+    )
+
+    # ---------------------------------------------------------
+    # ФИКСИРУЕМ ПРИНЯТИЕ СОГЛАСИЯ В АНАЛИТИКЕ
+    # ---------------------------------------------------------
+
+    await analytics_event(
+        user_id=user.id,
+        username=username,
+        event_type="personal_data_consent_accepted",
+        event_data=PERSONAL_DATA_DOCUMENT_VERSION
+    )
+
+    # ---------------------------------------------------------
+    # ПРОВЕРЯЕМ ИСТОРИЮ БРОНИРОВАНИЙ
+    # ---------------------------------------------------------
+
+    previous_booking = await db_manager.fetchone(
+        """
+        SELECT id
+        FROM bookings
+        WHERE user_id = ?
+        LIMIT 1
+        """,
+        (user.id,)
+    )
+
+    # ---------------------------------------------------------
+    # ФОРМИРУЕМ ПРИВЕТСТВИЕ
+    # ---------------------------------------------------------
+
+    if previous_booking:
+
+        greeting = (
+            f"С возвращением, "
+            f"<b>{user.first_name}</b>! ❤️\n\n"
+
+            "Мы рады снова видеть вас в Лампе! ✨\n\n"
+
+            "Будем рады вновь сделать ваш вечер "
+            "особенным. С чего начнем? 😉"
+        )
+
+    else:
+
+        greeting = (
+            f"Здравствуйте, "
+            f"<b>{user.first_name}</b>! 💫\n\n"
+
+            "Рады приветствовать вас в Лампе. "
+            "Я помогу вам забронировать столик "
+            "и отвечу на вопросы. С чего начнем? 😉"
+        )
+
+    # ---------------------------------------------------------
+    # ОТКРЫВАЕМ ГЛАВНОЕ МЕНЮ
+    # ---------------------------------------------------------
+
+    await message.answer(
+        greeting,
+        reply_markup=main_menu(user.id),
+        parse_mode="HTML"
+    )
+
+
+# ============================================================
+# ОБРАБОТЧИК /START
+# ============================================================
 
 @dp.message(CommandStart())
 async def start(message: Message):
 
-    username = message.from_user.username or "NoUsername"
+    user_id = message.from_user.id
 
-    # -----------------------------------------
-    # ИСТОЧНИК ПЕРЕХОДА
-    # -----------------------------------------
+    # ---------------------------------------------------------
+    # ОПРЕДЕЛЯЕМ ИСТОЧНИК ПЕРЕХОДА
+    # ---------------------------------------------------------
 
     source = "unknown"
 
     if message.text:
+
         parts = message.text.split(maxsplit=1)
 
         if len(parts) > 1:
             source = parts[1].strip().lower()
 
-    # Разрешённые источники
     allowed_sources = {
         "instagram",
         "tiktok",
@@ -1793,83 +2154,123 @@ async def start(message: Message):
     if source not in allowed_sources:
         source = "unknown"
 
-    # -----------------------------------------
-    # Сохраняем пользователя
-    # -----------------------------------------
+    # ---------------------------------------------------------
+    # ПРОВЕРЯЕМ СОГЛАСИЕ
+    # ---------------------------------------------------------
 
-    await db_manager.add_guest(
-        user_id=message.from_user.id,
-        username=username,
+    consent_accepted = await has_personal_data_consent(
+        user_id
+    )
+
+    # Если согласия нет — показываем документ.
+
+    if (
+            not consent_accepted
+            and user_id not in (ADMIN_ID, SMM_ID)
+    ):
+        await show_personal_data_consent(
+            message,
+            source
+        )
+
+        return
+
+    # ---------------------------------------------------------
+    # ЕСЛИ СОГЛАСИЕ УЖЕ ЕСТЬ — ОТКРЫВАЕМ БОТА
+    # ---------------------------------------------------------
+
+    await complete_start(
+        message=message,
+        user=message.from_user,
         source=source
     )
 
-    # -----------------------------------------
-    # Фиксируем посещение
-    # -----------------------------------------
+# ============================================================
+# ПРИНЯТИЕ СОГЛАСИЯ НА ОБРАБОТКУ ПЕРСОНАЛЬНЫХ ДАННЫХ
+# ============================================================
 
-    await analytics_visit(
-        user_id=message.from_user.id,
-        username=username
+@dp.callback_query(
+    F.data.startswith("consent_accept:")
+)
+async def consent_accept(
+    callback: CallbackQuery
+):
+
+    user_id = callback.from_user.id
+
+    # ---------------------------------------------------------
+    # ПОЛУЧАЕМ И ПРОВЕРЯЕМ ИСТОЧНИК ПЕРЕХОДА
+    # ---------------------------------------------------------
+
+    source = callback.data.split(":", 1)[1]
+
+    allowed_sources = {
+        "instagram",
+        "tiktok",
+        "threads",
+        "telegram",
+        "google",
+        "yandex",
+        "blogger",
+        "qr",
+        "friends",
+        "street",
+        "advertising",
+        "other",
+        "unknown"
+    }
+
+    if source not in allowed_sources:
+        source = "unknown"
+
+    # ---------------------------------------------------------
+    # СОХРАНЯЕМ СОГЛАСИЕ
+    # ---------------------------------------------------------
+
+    await save_personal_data_consent(
+        user_id=user_id
     )
 
-    # -----------------------------------------
-    # Фиксируем источник отдельным событием
-    # -----------------------------------------
-
-    await analytics_action(
-        user_id=message.from_user.id,
-        username=username,
-        event_type="source_detected",
-        event_data=source
+    await analytics_event(
+        user_id=user_id,
+        username=callback.from_user.username or "",
+        event_type="personal_data_consent_accepted",
+        event_data=PERSONAL_DATA_DOCUMENT_VERSION
     )
 
-    
-    # -----------------------------------------
-    # ПРОВЕРЯЕМ ИСТОРИЮ БРОНИРОВАНИЙ ГОСТЯ
-    # -----------------------------------------
+    # ---------------------------------------------------------
+    # УБИРАЕМ СТАРЫЕ КНОПКИ СОГЛАСИЯ
+    # ---------------------------------------------------------
 
-    previous_booking = await db_manager.fetchone(
-        """
-        SELECT id
-        FROM bookings
-        WHERE user_id = ?
-        LIMIT 1
-        """,
-        (message.from_user.id,)
-    )
+    try:
 
-    # -----------------------------------------
-    # ФОРМИРУЕМ ПЕРСОНАЛЬНОЕ ПРИВЕТСТВИЕ
-    # -----------------------------------------
-
-    if previous_booking:
-        greeting = (
-            f"С возвращением, "
-            f"<b>{message.from_user.first_name}</b>! ❤️\n\n"
-            "Мы рады снова видеть вас в Лампе! ✨\n\n"
-            "Будем рады вновь сделать ваш вечер "
-            "особенным. С чего начнем? 😉"
+        await callback.message.edit_reply_markup(
+            reply_markup=None
         )
-    else:
-        greeting = (
-            f"Здравствуйте, "
-            f"<b>{message.from_user.first_name}</b>! 💫\n\n"
-            "Рады приветствовать вас в Лампе. "
-            "Я помогу вам забронировать столик "
-            "и отвечу на вопросы. С чего начнем? 😉"
+
+    except Exception as e:
+
+        print(
+            f"Не удалось убрать клавиатуру согласия: {e}"
         )
 
-    # -----------------------------------------
-    # ОТПРАВЛЯЕМ ПРИВЕТСТВИЕ И ГЛАВНОЕ МЕНЮ
-    # -----------------------------------------
+    # ---------------------------------------------------------
+    # ПОДТВЕРЖДАЕМ ПРИНЯТИЕ
+    # ---------------------------------------------------------
 
-    await message.answer(
-        greeting,
-        reply_markup=main_menu(message.from_user.id),
-        parse_mode="HTML"
+    await callback.answer(
+        "Спасибо! Ваше согласие сохранено. ❤️"
     )
 
+    # ---------------------------------------------------------
+    # ЗАПУСКАЕМ ОСНОВНОЙ ФУНКЦИОНАЛ БОТА
+    # ---------------------------------------------------------
 
+    await complete_start(
+        message=callback.message,
+        user=callback.from_user,
+        source=source
+    )
 
 # --- Инструкция по использованию ---
 @dp.message(Command("help"))
@@ -1904,7 +2305,6 @@ async def help_command(message: Message):
 # --- Открытие меню ---
 @dp.callback_query(F.data == "menu")
 async def show_menu(callback: CallbackQuery):
-
     # Фиксируем действие в аналитике
     await analytics_action(
         user_id=callback.from_user.id,
@@ -1944,7 +2344,6 @@ async def show_menu(callback: CallbackQuery):
 # --- Найти нас ---
 @dp.callback_query(F.data == "map")
 async def show_map(callback: CallbackQuery):
-
     # Фиксируем действие в аналитике
     await analytics_action(
         user_id=callback.from_user.id,
@@ -1979,12 +2378,9 @@ async def show_map(callback: CallbackQuery):
     await callback.answer()
 
 
-
-
 # --- Процесс бронирования ---
 @dp.callback_query(F.data == "book")
 async def book_init(callback: CallbackQuery):
-
     await analytics_action(
         user_id=callback.from_user.id,
         username=callback.from_user.username or "",
@@ -2009,12 +2405,12 @@ async def book_init(callback: CallbackQuery):
 
     await callback.answer()
 
+
 @dp.callback_query(
     F.data.startswith("prev_month:")
     | F.data.startswith("next_month:")
 )
 async def change_month(callback: CallbackQuery):
-
     _, year, month = callback.data.split(":")
 
     year = int(year)
@@ -2036,10 +2432,9 @@ async def change_month(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("date:"))
 async def set_date(
-    callback: CallbackQuery,
-    state: FSMContext
+        callback: CallbackQuery,
+        state: FSMContext
 ):
-
     date_str = callback.data.split(":", 1)[1]
 
     # ========================================================
@@ -2051,7 +2446,6 @@ async def set_date(
     # ========================================================
 
     if await is_date_blocked(date_str):
-
         return await callback.answer(
             "🔒 Бронирование на эту дату закрыто.\n"
             "Пожалуйста, выберите другой день.",
@@ -2080,9 +2474,9 @@ async def set_date(
 
     await callback.answer()
 
+
 @dp.callback_query(F.data.startswith("time:"))
 async def set_time(callback: CallbackQuery, state: FSMContext):
-
     time = callback.data.split(":", 1)[1]
 
     await analytics_action(
@@ -2100,7 +2494,6 @@ async def set_time(callback: CallbackQuery, state: FSMContext):
     # ---------------------------------------------------------
 
     if date_str and await is_date_blocked(date_str):
-
         await state.clear()
 
         return await callback.answer(
@@ -2111,7 +2504,9 @@ async def set_time(callback: CallbackQuery, state: FSMContext):
         )
 
     if date_str and date_str.startswith("19.07.") and time > "20:00":
-        return await callback.answer("Извините, 19 июля бронирование столов на время после 20:00 осуществляется исключительно по телефону. Ждем вашего звонка! 📞", show_alert=True)
+        return await callback.answer(
+            "Извините, 19 июля бронирование столов на время после 20:00 осуществляется исключительно по телефону. Ждем вашего звонка! 📞",
+            show_alert=True)
 
     busy_tables = await get_busy_tables(date_str, time)
     if len(busy_tables) >= len(TABLES):
@@ -2132,7 +2527,6 @@ async def set_time(callback: CallbackQuery, state: FSMContext):
 # ШАГ 2: Отправка фото-схемы выбранного этажа и интерактивной клавиатуры столов
 @dp.callback_query(F.data.startswith("floor:"))
 async def set_floor(callback: CallbackQuery, state: FSMContext):
-
     floor_id = callback.data.split(":")[1]
 
     await analytics_action(
@@ -2158,8 +2552,6 @@ async def set_floor(callback: CallbackQuery, state: FSMContext):
 
     kb.adjust(3)
     kb.row(InlineKeyboardButton(text="⬅️ Изменить зал", callback_data="change_hall"))  # Возврат на шаг назад
-
-
 
     photo_path = FLOORS[floor_id]["photo"]
 
@@ -2209,10 +2601,11 @@ async def change_hall_handler(callback: CallbackQuery, state: FSMContext):
     # Возвращаем пользователя на состояние выбора этажа
     await state.set_state(Booking.floor)
     await callback.answer()
+
+
 # ШАГ 3: Фиксация выбранного стола и переход к запросу количества гостей
 @dp.callback_query(F.data.startswith("table:"))
 async def set_table(callback: CallbackQuery, state: FSMContext):
-
     table_id = callback.data.split(":")[1]
 
     await analytics_action(
@@ -2225,7 +2618,6 @@ async def set_table(callback: CallbackQuery, state: FSMContext):
     await state.update_data(table=table_id)
 
     max_capacity = TABLES[table_id]["capacity"]
-
 
     await callback.message.answer(
         f"Вы выбрали <b>Стол №{table_id}</b>.\n"
@@ -2259,7 +2651,6 @@ async def guests_process(message: Message, state: FSMContext):
                 f"Выбранный Стол №{table_id} вмещает не более {limit} гостей. Пожалуйста, укажите подходящее число гостей:\n"
                 f"(Для размещения более 8 человек звоните +375 29 149-33-33)"
             )
-
 
     # 2. Сохраняем гостей
     await state.update_data(guests=num)
@@ -2337,7 +2728,6 @@ async def comment_process(message: Message, state: FSMContext):
         # -----------------------------------------------------
 
         if await is_date_blocked(data["date"]):
-
             await message.answer(
                 "🔒 К сожалению, бронирование на выбранную дату "
                 "только что было закрыто администратором.\n\n"
@@ -2457,6 +2847,7 @@ async def comment_process(message: Message, state: FSMContext):
 
     await state.clear()
 
+
 @dp.callback_query(F.data == "ignore")
 async def ignore_cb(callback: CallbackQuery):
     await callback.answer()
@@ -2544,11 +2935,10 @@ async def events_handler(callback: CallbackQuery):
 
     await callback.answer()
 
+
 # Хэндлер для возврата в главное меню
 @dp.callback_query(F.data == "back_to_main")
-
 async def back_to_main(callback: CallbackQuery):
-
     try:
         await callback.message.delete()
     except:
@@ -2581,7 +2971,6 @@ async def feedback_init(callback: CallbackQuery, state: FSMContext):
 
 @dp.message(Booking.feedback)
 async def feedback_process(message: Message, state: FSMContext):
-
     if not message.text and not message.photo:
         return await message.answer(
             "Пожалуйста, пришлите ваш отзыв текстом или отправьте фото с описанием. 📝"
@@ -2677,6 +3066,7 @@ async def feedback_process(message: Message, state: FSMContext):
 
     await state.clear()
 
+
 async def set_main_menu(bot: Bot):
     # 1. Общее меню для всех
     user_commands = [
@@ -2731,6 +3121,7 @@ async def set_main_menu(bot: Bot):
         )
     )
 
+
 # Функция для принудительной очистки (вызвать один раз, если нужно выгнать старого админа)
 async def clear_old_admin_menu(bot: Bot, old_id: int):
     try:
@@ -2738,6 +3129,7 @@ async def clear_old_admin_menu(bot: Bot, old_id: int):
         print(f"=== Меню старого админа {old_id} удалено ===")
     except Exception as e:
         print(f"Не удалось удалить меню: {e}")
+
 
 @dp.message(Booking.admin_info)
 async def admin_info_process(message: Message, state: FSMContext):
@@ -2766,7 +3158,7 @@ async def admin_info_process(message: Message, state: FSMContext):
         phone,
         comment,
         "",
-        "confirmed"   # сразу подтверждена
+        "confirmed"  # сразу подтверждена
     )
 
     await db_manager.execute(query, params)
@@ -2779,6 +3171,7 @@ async def admin_info_process(message: Message, state: FSMContext):
 
     await state.clear()
 
+
 # --- АДМИН-ПАНЕЛЬ ---
 
 # ---------------- SMM ANALYTICS ----------------
@@ -2788,8 +3181,8 @@ async def admin_info_process(message: Message, state: FSMContext):
 # ============================================================
 
 async def count_unique_event_users(
-    event_type: str,
-    days=None
+        event_type: str,
+        days=None
 ):
     """
     Возвращает количество уникальных пользователей,
@@ -2828,7 +3221,7 @@ async def count_unique_event_users(
         params = (event_type,)
     else:
         start_date = (
-            datetime.now() - timedelta(days=days - 1)
+                datetime.now() - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = """
@@ -2859,8 +3252,8 @@ async def count_unique_event_users(
 
 
 async def count_event(
-    event_type: str,
-    days=None
+        event_type: str,
+        days=None
 ):
     """
     Возвращает общее количество событий.
@@ -2887,7 +3280,7 @@ async def count_event(
         params = (event_type,)
     else:
         start_date = (
-            datetime.now() - timedelta(days=days - 1)
+                datetime.now() - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = """
@@ -2931,8 +3324,8 @@ async def count_booking_events(event_type: str, days=None):
     else:
 
         start_date = (
-            datetime.now()
-            - timedelta(days=days - 1)
+                datetime.now()
+                - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = "AND created_at >= ?"
@@ -2957,8 +3350,8 @@ async def count_booking_events(event_type: str, days=None):
 
     return row["count"] if row else 0
 
-async def get_source_stats(days=None):
 
+async def get_source_stats(days=None):
     if days is None:
 
         date_filter = ""
@@ -2967,8 +3360,8 @@ async def get_source_stats(days=None):
     else:
 
         start_date = (
-            datetime.now()
-            - timedelta(days=days - 1)
+                datetime.now()
+                - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = "AND created_at >= ?"
@@ -2994,6 +3387,7 @@ async def get_source_stats(days=None):
     )
 
     return rows
+
 
 async def get_smm_stats(days=None):
     """
@@ -3022,7 +3416,7 @@ async def get_smm_stats(days=None):
         params = ()
     else:
         start_date = (
-            datetime.now() - timedelta(days=days - 1)
+                datetime.now() - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = """
@@ -3110,8 +3504,8 @@ async def get_smm_stats(days=None):
             """,
             (
                 (
-                    datetime.now()
-                    - timedelta(days=days - 1)
+                        datetime.now()
+                        - timedelta(days=days - 1)
                 ).strftime("%Y-%m-%d"),
             )
         )
@@ -3487,7 +3881,6 @@ async def build_smm_stats_text(days=1):
     # Популярность времени
     time_stats = await get_time_stats(days)
 
-
     # ============================================================
     # 2. НАЗВАНИЕ ПЕРИОДА
     # ============================================================
@@ -3501,7 +3894,6 @@ async def build_smm_stats_text(days=1):
     else:
         period = "Всё время"
 
-
     # ============================================================
     # 3. ОСНОВНАЯ ШАПКА
     # ============================================================
@@ -3511,7 +3903,6 @@ async def build_smm_stats_text(days=1):
         "━━━━━━━━━━━━━━━━━━\n"
         f"📅 Период: <b>{period}</b>\n\n"
     )
-
 
     # ============================================================
     # 4. АУДИТОРИЯ
@@ -3528,7 +3919,6 @@ async def build_smm_stats_text(days=1):
         f"• Заходов на человека: "
         f"<b>{stats['visits_per_user']}</b>\n\n"
     )
-
 
     # ============================================================
     # 5. ИСТОЧНИКИ ПРИВЛЕЧЕНИЯ
@@ -3555,7 +3945,6 @@ async def build_smm_stats_text(days=1):
         }
 
         for source in stats["source_stats"]:
-
             source_name = source_names.get(
                 source["source"],
                 source["source"]
@@ -3571,7 +3960,6 @@ async def build_smm_stats_text(days=1):
         text += "• Данных пока нет\n"
 
     text += "\n"
-
 
     # ============================================================
     # 6. ВОРОНКА БРОНИРОВАНИЯ
@@ -3605,7 +3993,6 @@ async def build_smm_stats_text(days=1):
         f"(заявок: {stats['booking_created']})\n\n"
     )
 
-
     # ============================================================
     # 7. РЕЗУЛЬТАТ БРОНИРОВАНИЯ
     # ============================================================
@@ -3622,7 +4009,6 @@ async def build_smm_stats_text(days=1):
         f"(событий: {stats['booking_cancelled']})\n\n"
     )
 
-
     # ============================================================
     # 8. ПОПУЛЯРНЫЕ СТОЛЫ
     # ============================================================
@@ -3634,7 +4020,6 @@ async def build_smm_stats_text(days=1):
         medals = ["🥇", "🥈", "🥉"]
 
         for index, row in enumerate(table_stats[:3]):
-
             medal = medals[index]
 
             table_id = row["table_id"]
@@ -3653,7 +4038,6 @@ async def build_smm_stats_text(days=1):
 
     text += "\n"
 
-
     # ============================================================
     # 9. ПОПУЛЯРНЫЕ ЗАЛЫ
     # ============================================================
@@ -3665,7 +4049,6 @@ async def build_smm_stats_text(days=1):
         medals = ["🥇", "🥈", "🥉"]
 
         for index, row in enumerate(floor_stats[:3]):
-
             medal = medals[index]
 
             floor_id = row["floor_id"]
@@ -3693,7 +4076,6 @@ async def build_smm_stats_text(days=1):
 
     text += "\n"
 
-
     # ============================================================
     # 10. ПОПУЛЯРНОЕ ВРЕМЯ
     # ============================================================
@@ -3705,7 +4087,6 @@ async def build_smm_stats_text(days=1):
         medals = ["🥇", "🥈", "🥉"]
 
         for index, row in enumerate(time_stats[:3]):
-
             medal = medals[index]
 
             booking_time = row["booking_time"]
@@ -3724,7 +4105,6 @@ async def build_smm_stats_text(days=1):
 
     text += "\n"
 
-
     # ============================================================
     # 11. ОТЗЫВЫ
     # ============================================================
@@ -3738,7 +4118,6 @@ async def build_smm_stats_text(days=1):
         f"• Всего отзывов: "
         f"<b>{stats['feedback_sent']}</b>\n\n"
     )
-
 
     # ============================================================
     # 12. КОНВЕРСИЯ
@@ -3762,7 +4141,6 @@ async def build_smm_stats_text(days=1):
         f"• Посетитель → подтверждённая бронь: "
         f"<b>{stats['visitor_to_confirmed_conversion']}%</b>\n"
     )
-
 
     return text
 
@@ -3926,8 +4304,8 @@ async def get_smm_users(days=30):
     else:
 
         start_date = (
-            datetime.now()
-            - timedelta(days=days - 1)
+                datetime.now()
+                - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = """
@@ -4010,6 +4388,7 @@ async def get_smm_users(days=30):
 
     return rows
 
+
 async def get_table_stats(days=None):
     """
     Популярность столов по количеству выборов.
@@ -4023,8 +4402,8 @@ async def get_table_stats(days=None):
     else:
 
         start_date = (
-            datetime.now()
-            - timedelta(days=days - 1)
+                datetime.now()
+                - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = "AND created_at >= ?"
@@ -4049,6 +4428,7 @@ async def get_table_stats(days=None):
 
     return rows
 
+
 async def get_floor_stats(days=None):
     """
     Популярность залов.
@@ -4062,8 +4442,8 @@ async def get_floor_stats(days=None):
     else:
 
         start_date = (
-            datetime.now()
-            - timedelta(days=days - 1)
+                datetime.now()
+                - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = "AND created_at >= ?"
@@ -4088,6 +4468,7 @@ async def get_floor_stats(days=None):
 
     return rows
 
+
 async def get_time_stats(days=None):
     """
     Популярность времени бронирования.
@@ -4101,8 +4482,8 @@ async def get_time_stats(days=None):
     else:
 
         start_date = (
-            datetime.now()
-            - timedelta(days=days - 1)
+                datetime.now()
+                - timedelta(days=days - 1)
         ).strftime("%Y-%m-%d 00:00:00")
 
         date_filter = "AND created_at >= ?"
@@ -4126,6 +4507,7 @@ async def get_time_stats(days=None):
     )
 
     return rows
+
 
 def smm_period_name(days):
     """
@@ -4309,8 +4691,8 @@ async def smm_users_callback(callback: CallbackQuery):
             )
 
             if (
-                current_chunk
-                and len(current_chunk) + len(user_text) > max_length
+                    current_chunk
+                    and len(current_chunk) + len(user_text) > max_length
             ):
                 await callback.message.answer(
                     current_chunk,
@@ -4335,12 +4717,12 @@ async def smm_users_callback(callback: CallbackQuery):
 
     await callback.answer()
 
+
 @dp.callback_query(
     F.from_user.id == SMM_ID,
     F.data.startswith("smm_users_back:")
 )
 async def smm_users_back_callback(callback: CallbackQuery):
-
     parts = callback.data.split(":", 1)
 
     if len(parts) != 2:
@@ -4381,6 +4763,7 @@ async def smm_users_back_callback(callback: CallbackQuery):
         )
 
     await callback.answer()
+
 
 # Хэндлер для команды /today
 @dp.message(F.from_user.id == ADMIN_ID, Command("today"))
@@ -4426,9 +4809,9 @@ async def admin_today_bookings(message: Message):
 
     await message.answer(text, parse_mode="HTML")
 
+
 @dp.message(F.from_user.id == ADMIN_ID, Command("all_bookings"))
 async def admin_all_bookings(message: Message):
-
     rows = await db_manager.fetchall(
         """
         SELECT *
@@ -4448,7 +4831,6 @@ async def admin_all_bookings(message: Message):
         )
 
     for row in rows:
-
         floor_name = FLOORS.get(
             row["floor_id"],
             {}
@@ -4487,12 +4869,13 @@ async def admin_all_bookings(message: Message):
             parse_mode="HTML",
             reply_markup=kb.as_markup()
         )
+
+
 @dp.message(
     F.from_user.id == ADMIN_ID,
     Command("last_booking")
 )
 async def show_last_admin_booking(message: Message):
-
     row = await db_manager.fetchone(
         """
         SELECT *
@@ -4561,6 +4944,7 @@ async def admin_statistics(message: Message):
     )
     await message.answer(text, parse_mode="HTML")
 
+
 @dp.message(F.from_user.id == ADMIN_ID, Command("admin_book"))
 async def admin_book_start(message: Message, state: FSMContext):
     now = datetime.now()
@@ -4573,6 +4957,7 @@ async def admin_book_start(message: Message, state: FSMContext):
         reply_markup=get_calendar_kb(now.year, now.month),
         parse_mode="HTML"
     )
+
 
 # --- ОБРАБОТКА ПОДТВЕРЖДЕНИЯ И ОТМЕНЫ ---
 
@@ -4614,7 +4999,7 @@ async def admin_confirm_booking(callback: CallbackQuery):
         print(f"Ошибка планировщика: {e}")
 
     # Уведомляем клиента
-    
+
     # Уведомляем клиента о подтверждении брони
     # и добавляем кнопку самостоятельной отмены.
     if row["user_id"] != 0:
@@ -4658,6 +5043,7 @@ async def admin_confirm_booking(callback: CallbackQuery):
             f"Не удалось обновить сообщение "
             f"о брони №{booking_id}: {e}"
         )
+
 
 @dp.callback_query(F.from_user.id == ADMIN_ID, F.data.startswith("canc_"))
 async def admin_cancel_booking(callback: CallbackQuery):
@@ -4904,7 +5290,7 @@ async def guest_cancel_yes(callback: CallbackQuery):
     F.data.startswith("cancel_last_admin_")
 )
 async def cancel_last_admin_booking(
-    callback: CallbackQuery
+        callback: CallbackQuery
 ):
     booking_id = int(
         callback.data.replace(
@@ -4962,12 +5348,12 @@ async def cancel_last_admin_booking(
         "Бронь отменена"
     )
 
+
 @dp.callback_query(
     F.from_user.id == ADMIN_ID,
     F.data.startswith("admin_del_")
 )
 async def admin_delete_booking(callback: CallbackQuery):
-
     booking_id = int(
         callback.data.replace(
             "admin_del_",
@@ -5033,15 +5419,15 @@ async def admin_delete_booking(callback: CallbackQuery):
         "Бронь отменена"
     )
 
+
 @dp.callback_query(
     F.from_user.id == SMM_ID,
     F.data.startswith("reply_feedback:")
 )
 async def reply_feedback_start(
-    callback: CallbackQuery,
-    state: FSMContext
+        callback: CallbackQuery,
+        state: FSMContext
 ):
-
     feedback_id = int(
         callback.data.split(":")[1]
     )
@@ -5060,14 +5446,14 @@ async def reply_feedback_start(
 
     await callback.answer()
 
+
 @dp.message(
     Booking.reply_feedback
 )
 async def send_feedback_reply(
-    message: Message,
-    state: FSMContext
+        message: Message,
+        state: FSMContext
 ):
-
     data = await state.get_data()
 
     feedback_id = data["feedback_id"]
@@ -5082,7 +5468,6 @@ async def send_feedback_reply(
     )
 
     if not feedback:
-
         await message.answer(
             "❌ Отзыв не найден."
         )
@@ -5123,14 +5508,15 @@ async def send_feedback_reply(
         )
 
     await state.clear()
+
+
 @dp.message(
     Booking.event_edit
 )
 async def save_event_text(
-    message: Message,
-    state: FSMContext
+        message: Message,
+        state: FSMContext
 ):
-
     await db_manager.execute(
         """
         UPDATE events
@@ -5148,15 +5534,15 @@ async def save_event_text(
 
     await state.clear()
 
+
 @dp.message(
     F.from_user.id == SMM_ID,
     Command("edit_event")
 )
 async def edit_event_start(
-    message: Message,
-    state: FSMContext
+        message: Message,
+        state: FSMContext
 ):
-
     event = await db_manager.fetchone(
         """
         SELECT *
@@ -5190,15 +5576,16 @@ async def edit_event_start(
     await state.set_state(
         Booking.event_edit
     )
+
+
 @dp.callback_query(
     F.from_user.id == SMM_ID,
     F.data == "smm_main_menu"
 )
 async def smm_main_menu(
-    callback: CallbackQuery,
-    state: FSMContext
+        callback: CallbackQuery,
+        state: FSMContext
 ):
-
     await state.clear()
 
     try:
@@ -5215,6 +5602,8 @@ async def smm_main_menu(
     )
 
     await callback.answer()
+
+
 # ---------------- RUN ----------------
 async def main():
     try:
@@ -5240,8 +5629,6 @@ async def main():
         if not scheduler.running:
             scheduler.start()
             print("=== Планировщик запущен ===")
-
-
 
         # ЭТАП 3: Работа
         print("=== Бот Lampa в эфире! ===")
